@@ -49,7 +49,69 @@ class TorchProfileAnalyzer:
             ]
         }
 
-    # ... [Previous methods remain the same until compare_quantization_by_layer] ...
+    def identify_layer_type(self, kernel_name: str) -> str:
+        """Identify the type of layer operation based on kernel name."""
+        kernel_lower = kernel_name.lower()
+        
+        for layer_type, patterns in self.layer_patterns.items():
+            if any(re.search(pattern, kernel_lower) for pattern in patterns):
+                return layer_type
+                
+        return 'other'
+
+    def load_profile_data(self, filepath: str) -> None:
+        """Load and parse the PyTorch profiler JSON file."""
+        with open(filepath, 'r') as f:
+            profile_data = json.load(f)
+            
+        # Filter for kernel events
+        kernel_events = [event for event in profile_data 
+                        if event.get('cat') == 'kernel']
+        
+        # Process each kernel event
+        for event in kernel_events:
+            self.kernel_stats['name'].append(event['name'])
+            self.kernel_stats['duration'].append(event['dur'])
+            self.kernel_stats['layer_type'].append(
+                self.identify_layer_type(event['name']))
+            self.kernel_stats['occupancy'].append(
+                event['args'].get('est. achieved occupancy %', 0))
+            self.kernel_stats['blocks_per_sm'].append(
+                event['args'].get('blocks per SM', 0))
+            self.kernel_stats['warps_per_sm'].append(
+                event['args'].get('warps per SM', 0))
+            self.kernel_stats['shared_memory'].append(
+                event['args'].get('shared memory', 0))
+
+    def analyze_layer_types(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Analyze performance grouped by layer types."""
+        df = pd.DataFrame(self.kernel_stats)
+        
+        # Layer type summary
+        layer_summary = df.groupby('layer_type').agg({
+            'duration': ['count', 'mean', 'sum', 'std'],
+            'occupancy': 'mean',
+            'shared_memory': 'mean'
+        }).round(2)
+        
+        # Calculate percentage of total time
+        total_time = df['duration'].sum()
+        layer_summary['time_percentage'] = (
+            layer_summary[('duration', 'sum')] / total_time * 100
+        ).round(2)
+        
+        # Detailed kernel analysis within each layer type
+        kernel_analysis = df.groupby(['layer_type', 'name']).agg({
+            'duration': ['count', 'mean', 'sum', 'std'],
+            'occupancy': 'mean',
+            'shared_memory': 'mean'
+        }).round(2)
+        
+        kernel_analysis['time_percentage'] = (
+            kernel_analysis[('duration', 'sum')] / total_time * 100
+        ).round(2)
+        
+        return layer_summary, kernel_analysis
 
     def compare_quantization_by_layer(self, fp32_file: str, quant_files: Dict[str, str]) -> Dict:
         """
