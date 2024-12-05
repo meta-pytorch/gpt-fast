@@ -60,14 +60,31 @@ class TorchProfileAnalyzer:
         return 'other'
 
     def load_profile_data(self, filepath: str) -> None:
-        """Load and parse the PyTorch profiler JSON file."""
+        """Load and parse the PyTorch profiler JSON file with validation."""
         with open(filepath, 'r') as f:
-            profile_data = json.load(f)
-            
+            try:
+                data = json.load(f)
+                # Extract traceEvents from the JSON structure
+                profile_data = data.get('traceEvents', [])
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON file format: {filepath}\nError: {e}")
+
+        # Validate that traceEvents is a list
+        if not isinstance(profile_data, list):
+            raise ValueError(
+                f"Expected 'traceEvents' to be a list in: {filepath}. "
+                f"Got type {type(profile_data)} instead."
+            )
+
         # Filter for kernel events
-        kernel_events = [event for event in profile_data 
-                        if event.get('cat') == 'kernel']
-        
+        kernel_events = [event for event in profile_data if event.get('cat') == 'kernel']
+
+        if not kernel_events:
+            raise ValueError(
+                f"No kernel events found in: {filepath}. "
+                "Check if the profiler output is correct or if 'cat' field is present."
+            )
+
         # Process each kernel event
         for event in kernel_events:
             self.kernel_stats['name'].append(event['name'])
@@ -82,7 +99,6 @@ class TorchProfileAnalyzer:
                 event['args'].get('warps per SM', 0))
             self.kernel_stats['shared_memory'].append(
                 event['args'].get('shared memory', 0))
-
     def analyze_layer_types(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Analyze performance grouped by layer types."""
         df = pd.DataFrame(self.kernel_stats)
@@ -168,14 +184,24 @@ class TorchProfileAnalyzer:
         for quant_type, result in comparison_results['quantization_results'].items():
             summary = result['layer_summary']
             for layer_type in summary.index:
+                # Ensure time_percentage is accessed correctly from the summary DataFrame
+                time_pct = summary.loc[layer_type, 'time_percentage']
+                if isinstance(time_pct, pd.Series):
+                    time_pct = time_pct.iloc[0]
                 data.append({
                     'Quantization': quant_type,
                     'Layer Type': layer_type,
-                    'Time %': summary.loc[layer_type, 'time_percentage']
+                    'Time %': float(time_pct)  # Convert to float to avoid any ambiguity
                 })
         
         plot_df = pd.DataFrame(data)
-        sns.barplot(x='Layer Type', y='Time %', hue='Quantization', data=plot_df)
+        # Ensure the data types are correct
+        plot_df['Time %'] = plot_df['Time %'].astype(float)
+        plot_df['Layer Type'] = plot_df['Layer Type'].astype(str)
+        plot_df['Quantization'] = plot_df['Quantization'].astype(str)
+        
+        # Create the barplot with explicit categorical data
+        sns.barplot(data=plot_df, x='Layer Type', y='Time %', hue='Quantization')
         plt.title('Time Distribution Across Layer Types')
         plt.xticks(rotation=45)
         
@@ -185,13 +211,17 @@ class TorchProfileAnalyzer:
         for layer_type, speedups in comparison_results['speedup_analysis'].items():
             speedup_dict = {'Layer Type': layer_type}
             for quant_method in quant_methods:
-                speedup_dict[f'{quant_method} Speedup'] = speedups[f'{quant_method}_speedup']
+                speedup_dict[f'{quant_method} Speedup'] = float(speedups[f'{quant_method}_speedup'])
             speedup_data.append(speedup_dict)
         
         speedup_df = pd.DataFrame(speedup_data)
+        # Convert speedup columns to float
+        for method in quant_methods:
+            speedup_df[f'{method} Speedup'] = speedup_df[f'{method} Speedup'].astype(float)
+        
         speedup_df.plot(x='Layer Type', 
-                       y=[f'{method} Speedup' for method in quant_methods], 
-                       kind='bar', width=0.8)
+                    y=[f'{method} Speedup' for method in quant_methods], 
+                    kind='bar', width=0.8)
         plt.title('Speedup by Layer Type')
         plt.xticks(rotation=45)
         

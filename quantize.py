@@ -309,7 +309,7 @@ class GPTQQuantHandler(QuantHandler):
 
 ##### Weight-only int8 per-channel quantized code ######
 
-def replace_linear_weight_only_int8_per_channel(module):
+def     replace_linear_weight_only_int8_per_channel(module):
     for name, child in module.named_children():
         if isinstance(child, nn.Linear):
             setattr(module, name, WeightOnlyInt8Linear(child.in_features, child.out_features))
@@ -360,7 +360,9 @@ def prepare_int4_weight_and_scales_and_zeros(weight_bf16, groupsize, inner_k_til
     weight_int32, scales_and_zeros = group_quantize_tensor(
         weight_bf16, n_bit=4, groupsize=groupsize
     )
-    weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(weight_int32, inner_k_tiles)
+    weight_uint8 = weight_int32.to(torch.uint8)
+    weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(weight_uint8, inner_k_tiles)
+    # weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(weight_uint32, inner_k_tiles)
     return weight_int4pack, scales_and_zeros
 
 
@@ -488,7 +490,7 @@ class WeightOnlyInt4Linear(torch.nn.Module):
 
     def __init__(
             self, in_features: int, out_features: int,
-            bias=True, device=None, dtype=None, groupsize: int = 128, inner_k_tiles: int = 8, padding: bool = True,
+            bias=True, device=None, dtype=None, groupsize: int = 128, inner_k_tiles: int = 4, padding: bool = True,
     ) -> None:
         super().__init__()
         self.padding = padding
