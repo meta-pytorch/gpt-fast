@@ -99,6 +99,7 @@ class TorchProfileAnalyzer:
                 event['args'].get('warps per SM', 0))
             self.kernel_stats['shared_memory'].append(
                 event['args'].get('shared memory', 0))
+
     def analyze_layer_types(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Analyze performance grouped by layer types."""
         df = pd.DataFrame(self.kernel_stats)
@@ -184,23 +185,21 @@ class TorchProfileAnalyzer:
         for quant_type, result in comparison_results['quantization_results'].items():
             summary = result['layer_summary']
             for layer_type in summary.index:
-                # Ensure time_percentage is accessed correctly from the summary DataFrame
+                # Ensure time_percentage is accessed correctly
                 time_pct = summary.loc[layer_type, 'time_percentage']
                 if isinstance(time_pct, pd.Series):
                     time_pct = time_pct.iloc[0]
                 data.append({
                     'Quantization': quant_type,
                     'Layer Type': layer_type,
-                    'Time %': float(time_pct)  # Convert to float to avoid any ambiguity
+                    'Time %': float(time_pct)
                 })
         
         plot_df = pd.DataFrame(data)
-        # Ensure the data types are correct
         plot_df['Time %'] = plot_df['Time %'].astype(float)
         plot_df['Layer Type'] = plot_df['Layer Type'].astype(str)
         plot_df['Quantization'] = plot_df['Quantization'].astype(str)
         
-        # Create the barplot with explicit categorical data
         sns.barplot(data=plot_df, x='Layer Type', y='Time %', hue='Quantization')
         plt.title('Time Distribution Across Layer Types')
         plt.xticks(rotation=45)
@@ -210,18 +209,17 @@ class TorchProfileAnalyzer:
         speedup_data = []
         for layer_type, speedups in comparison_results['speedup_analysis'].items():
             speedup_dict = {'Layer Type': layer_type}
-            for quant_method in quant_methods:
-                speedup_dict[f'{quant_method} Speedup'] = float(speedups[f'{quant_method}_speedup'])
+            for method in quant_methods:
+                # Rename speedup column to {method.lower()}_layer speedup
+                speedup_column_name = f"{method.lower()}_layer speedup"
+                speedup_dict[speedup_column_name] = float(speedups[f'{method}_speedup'])
             speedup_data.append(speedup_dict)
         
         speedup_df = pd.DataFrame(speedup_data)
-        # Convert speedup columns to float
-        for method in quant_methods:
-            speedup_df[f'{method} Speedup'] = speedup_df[f'{method} Speedup'].astype(float)
         
-        speedup_df.plot(x='Layer Type', 
-                    y=[f'{method} Speedup' for method in quant_methods], 
-                    kind='bar', width=0.8)
+        # Dynamically choose columns for plotting
+        speedup_cols = [f"{method.lower()}_layer speedup" for method in quant_methods]
+        speedup_df.plot(x='Layer Type', y=speedup_cols, kind='bar', width=0.8)
         plt.title('Speedup by Layer Type')
         plt.xticks(rotation=45)
         
@@ -281,11 +279,33 @@ def main():
             speedup = speedups[f'{quant_method}_speedup']
             print(f"  {quant_method} Speedup: {speedup:.2f}x")
     
+    # Export summaries to CSV
+    # FP32 summary
+    fp32_summary = comparison_results['quantization_results']['FP32']['layer_summary']
+    fp32_summary.to_csv(output_dir / 'fp32_layer_summary.csv')
+
+    # For each quant method, export summary
+    for quant_method in quant_files.keys():
+        summary = comparison_results['quantization_results'][quant_method]['layer_summary']
+        quant_method_lower = quant_method.lower()
+        summary.to_csv(output_dir / f'{quant_method_lower}_layer_summary.csv')
+    
+    # Export speedup analysis as CSV
+    speedup_rows = []
+    for layer_type, speedups in comparison_results['speedup_analysis'].items():
+        row = {'layer_type': layer_type}
+        for quant_method in quant_files.keys():
+            row[f'{quant_method}_speedup'] = speedups[f'{quant_method}_speedup']
+        speedup_rows.append(row)
+    speedup_df = pd.DataFrame(speedup_rows)
+    speedup_df.to_csv(output_dir / 'speedup_analysis.csv', index=False)
+    
     # Generate visualization
+    plot_filename = '_'.join([m.lower() for m in quant_files.keys()]) + '_layer_analysis.png'
     analyzer.plot_layer_analysis(
         comparison_results,
         list(quant_files.keys()),
-        output_dir / 'layer_analysis.png'
+        output_dir / plot_filename
     )
 
 if __name__ == "__main__":
