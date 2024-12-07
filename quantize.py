@@ -529,6 +529,96 @@ class WeightOnlyInt4Linear(torch.nn.Module):
         )
 
 
+class WeightAndActivationInt8QuantHandler(WeightOnlyInt8QuantHandler):
+    def convert_for_runtime(self):
+        """Convert the model for runtime by replacing layers"""
+        replace_linear_weight_and_activation_int8(self.mod)
+        return self.mod
+
+    @torch.no_grad()
+    def create_quantized_state_dict(self):
+        # First get original state dict to preserve all non-Linear weights/biases
+        cur_state_dict = self.mod.state_dict()
+
+        # Then quantize the linear layers while preserving everything else
+        for fqn, mod in self.mod.named_modules():
+            if isinstance(mod, torch.nn.Linear):
+                int8_weight, scales, _ = dynamically_quantize_per_channel(
+                    mod.weight.float(), -128, 127, torch.int8
+                )
+                # Update weights and add activation scale
+                cur_state_dict[f"{fqn}.weight"] = int8_weight
+                cur_state_dict[f"{fqn}.scales"] = scales
+                cur_state_dict[f"{fqn}.act_scale"] = torch.ones(1, dtype=torch.float32)
+
+        return cur_state_dict
+
+
+class WeightAndActivationInt8Linear(torch.nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool = True,
+        device=None,
+        dtype=None,
+    ) -> None:
+
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+
+        # Keep weight buffer for model compatibility
+        self.register_buffer(
+            "weight", torch.empty((out_features, in_features), dtype=torch.int8)
+        )
+        self.register_buffer("scales", torch.ones(out_features, dtype=torch.float32))
+        self.register_buffer("act_scale", torch.ones(1, dtype=torch.float32))
+
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_features, **factory_kwargs))
+        else:
+            self.register_parameter("bias", None)
+
+    def forward(self, x):
+        # x shape: (batch_size, seq_len, hidden_dim)
+        orig_shape = x.shape
+
+        # Reshape to 2D and transpose for per-channel quantization
+        x_2d = x.reshape(-1, orig_shape[-1]).T
+
+        # Single quantize call for all channels
+        x_int8, act_scale, _ = dynamically_quantize_per_channel(
+            x_2d, -128, 127, torch.int8
+        )
+
+        # Make sure weight and activation dequant happen in the right dtype
+        weight_dequant = (self.weight.float() * self.scales.unsqueeze(1)).to(x.dtype)
+        x_dequant = (
+            (x_int8.T.float() * act_scale).reshape(orig_shape).to(weight_dequant.dtype)
+        )
+
+        return F.linear(x_dequant, weight_dequant, self.bias)
+
+
+def replace_linear_weight_and_activation_int8(module):
+    """Recursively replace linear layers with quantized version"""
+    for name, child in module.named_children():
+        if isinstance(child, nn.Linear):
+            new_layer = WeightAndActivationInt8Linear(
+                child.in_features,
+                child.out_features,
+                bias=child.bias is not None,
+                device=child.weight.device,
+                dtype=child.weight.dtype,
+            )
+            setattr(module, name, new_layer)
+        else:
+            replace_linear_weight_and_activation_int8(child)
+    return module
+
+
 def quantize(
     checkpoint_path: Path = Path("checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth"),
     mode: str = 'int8',
