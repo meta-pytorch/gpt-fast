@@ -581,27 +581,25 @@ class WeightAndActivationInt8Linear(torch.nn.Module):
             self.register_parameter("bias", None)
 
     def forward(self, x):
-        # Step 1: Quantize activations to int8
+        # Step 1: Quantize input activations to int8
         orig_shape = x.shape
-        x_2d = x.reshape(-1, orig_shape[-1]).T
+        x_2d = x.reshape(-1, orig_shape[-1]).T  # Flatten input for quantization
         x_int8, act_scale, _ = dynamically_quantize_per_channel(
             x_2d, -128, 127, torch.int8
         )
 
-        # Step 2: Perform matrix multiplication directly in int8
-        # Convert weight to dequantized float32 only after int8 matmul
-        weight_int8 = self.weight
-        output_int32 = torch.matmul(x_int8.T, weight_int8.T)
+        # Step 2: Dequantize weights and activations
+        weight_dequant = self.weight.float() * self.scales.unsqueeze(
+            1
+        )  # Dequantize weights
+        x_dequant = (x_int8.T.float() * act_scale).reshape(
+            orig_shape
+        )  # Dequantize activations
 
-        # Step 3: Dequantize the result
-        combined_scale = act_scale * self.scales
-        output_float = (output_int32.float() * combined_scale).reshape(orig_shape)
+        # Step 3: Perform matrix multiplication in float32
+        output = F.linear(x_dequant, weight_dequant, self.bias)  # Fully in float32
 
-        # Step 4: Add bias (kept in float)
-        if self.bias is not None:
-            output_float += self.bias
-
-        return output_float
+        return output
 
         # weight_dequant = (self.weight.float() * self.scales.unsqueeze(1)).to(x.dtype)
         # x_dequant = (x_int8.T.float() * act_scale).reshape(orig_shape).to(weight_dequant.dtype)
