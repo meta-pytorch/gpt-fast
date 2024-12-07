@@ -360,9 +360,11 @@ def prepare_int4_weight_and_scales_and_zeros(weight_bf16, groupsize, inner_k_til
     weight_int32, scales_and_zeros = group_quantize_tensor(
         weight_bf16, n_bit=4, groupsize=groupsize
     )
-    weight_uint8 = weight_int32.to(torch.uint8)
-    weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(weight_uint8, inner_k_tiles)
-    # weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(weight_uint32, inner_k_tiles)
+    # weight_uint8 = weight_int32.to(torch.uint8)
+    # weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(weight_uint8, inner_k_tiles)
+    weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(
+        weight_uint32, inner_k_tiles
+    )
     return weight_int4pack, scales_and_zeros
 
 
