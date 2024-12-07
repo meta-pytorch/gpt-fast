@@ -581,13 +581,20 @@ class WeightAndActivationInt8Linear(torch.nn.Module):
             self.register_parameter("bias", None)
 
     def forward(self, x):
-        act_scale = self.act_scale
-        x_int8 = (x / act_scale).round().clamp(-128, 127).to(torch.int8)
-        output_int32 = torch.matmul(x_int8, self.weight.T)
-        combined_scale = act_scale * self.scales
-        output = output_int32.float() * combined_scale
+        # Quantize input activations to int8
+        x_int8 = (x / self.act_scale).round().clamp(-128, 127).to(torch.int8)
+
+        # Dequantize activations and weights for matrix multiplication
+        x_dequant = x_int8.float() * self.act_scale
+        weight_dequant = self.weight.float() * self.scales.unsqueeze(1)
+
+        # Perform matrix multiplication in float32
+        output = torch.matmul(x_dequant, weight_dequant.T)
+
+        # Add bias if present
         if self.bias is not None:
-            output += self.bias.float() * combined_scale
+            output += self.bias
+
         return output
 
         # weight_dequant = (self.weight.float() * self.scales.unsqueeze(1)).to(x.dtype)
