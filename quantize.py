@@ -649,8 +649,12 @@ def quantize(
     model = model.to(dtype=precision, device=device)
 
     if mode == 'int8':
-        print("Quantizing model weights for int8 weight-only symmetric per-channel quantization")
-        quant_handler = WeightOnlyInt8QuantHandler(model)
+        # print("Quantizing model weights for int8 weight-only symmetric per-channel quantization")
+        # quant_handler = WeightOnlyInt8QuantHandler(model)
+        print(
+            "Quantizing model weights for int8 weight and activation symmetric per-channel quantization"
+        )
+        quant_handler = WeightAndActivationInt8QuantHandler(model)
         quantized_state_dict = quant_handler.create_quantized_state_dict()
 
         dir_name = checkpoint_path.parent
