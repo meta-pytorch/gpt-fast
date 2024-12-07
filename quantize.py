@@ -630,7 +630,7 @@ def quantize(
 ) -> None:
     assert checkpoint_path.is_file(), checkpoint_path
 
-    device = "cuda"
+    device = "cpu"
     precision = torch.bfloat16
 
     print("Loading model ...")
