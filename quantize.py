@@ -595,55 +595,61 @@ class WeightAndActivationInt8Linear(torch.nn.Module):
         # return F.linear(x_dequant, weight_dequant, self.bias)
 
 
-def materialize_tensor(tensor, device, as_parameter=False):
-    if tensor.is_meta:
-        initialized_tensor = torch.empty_like(tensor, device=device)
-        if as_parameter:
-            return torch.nn.Parameter(initialized_tensor)
-        return initialized_tensor
-    return tensor
+# def materialize_tensor(tensor, device, as_parameter=False):
+#     if tensor.is_meta:
+#         initialized_tensor = torch.empty_like(tensor, device=device)
+#         if as_parameter:
+#             return torch.nn.Parameter(initialized_tensor)
+#         return initialized_tensor
+#     return tensor
 
 
 def replace_linear_weight_and_activation_int8(module):
     for name, child in module.named_children():
         if isinstance(child, nn.Linear):
+            # Create new int8-compatible layer
             new_layer = WeightAndActivationInt8Linear(
                 child.in_features,
                 child.out_features,
                 bias=child.bias is not None,
-                device=child.weight.device,
-                dtype=child.weight.dtype,
+                device=(
+                    "cuda" if torch.cuda.is_available() else "cpu"
+                ),  # Ensure on correct device
+                dtype=torch.float32,  # Use standard float32 for initialization
             )
 
-            child.weight = materialize_tensor(
-                child.weight, device=child.weight.device, as_parameter=True
+            # Materialize weight and bias, ensuring they are non-Meta
+            with torch.no_grad():
+                if child.weight.is_meta:
+                    child.weight = torch.empty_like(
+                        child.weight, device=new_layer.weight.device
+                    )
+                new_layer.weight.copy_(
+                    child.weight.detach().to(torch.int8)
+                )  # Convert to int8 directly
+
+                if hasattr(child, "bias") and child.bias is not None:
+                    if child.bias.is_meta:
+                        child.bias = torch.empty_like(
+                            child.bias, device=new_layer.weight.device
+                        )
+                    new_layer.bias.copy_(child.bias.detach())
+
+            # Handle scales (initialize to ones if not present)
+            new_layer.scales = torch.ones(
+                new_layer.weight.size(0),
+                dtype=torch.bfloat16,
+                device=new_layer.weight.device,
             )
-            new_layer.weight.copy_(child.weight.int_repr())
-
-            if hasattr(child, "scales"):
-                child.scales = materialize_tensor(
-                    child.scales, device=child.weight.device
-                )
-                new_layer.scales.copy_(child.scales)
-
-            if child.bias is not None:
-                child.bias = materialize_tensor(
-                    child.bias, device=child.weight.device, as_parameter=True
-                )
-                if hasattr(child.bias, "int_repr"):
-                    new_layer.bias.copy_(child.bias.int_repr())
-                else:
-                    new_layer.bias.copy_(child.bias)
-
-            new_layer.scales = materialize_tensor(
-                new_layer.scales, device=new_layer.weight.device
-            )
-            new_layer.act_scale = materialize_tensor(
-                new_layer.act_scale, device=new_layer.weight.device
+            new_layer.act_scale = torch.tensor(
+                1.0, dtype=torch.bfloat16, device=new_layer.weight.device
             )
 
+            # Replace the layer in the parent module
             setattr(module, name, new_layer)
+
         else:
+            # Recurse into child modules
             replace_linear_weight_and_activation_int8(child)
     return module
 
