@@ -903,6 +903,9 @@ if __name__ == '__main__':
         choices=["int8", "int4", "int4-gptq", "int8-activation", "hybrid"],
         help="type of quantization to perform",
     )
+    parser.add_argument(
+        "--critical_layers", nargs="*", help="layers to use Int8 for in hybrid mode"
+    )
     parser.add_argument('--groupsize', type=int, default=32, help='Group size for int4 quantization.')
     parser.add_argument('--calibration_tasks', type=str, nargs='+', default=['wikitext'], help='tasks to do gptq calibration on, if doing gptq')
     parser.add_argument('--calibration_limit', type=int, default=1000, help='number of samples to use for gptq calibration')
