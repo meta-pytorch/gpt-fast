@@ -362,8 +362,6 @@ def prepare_int4_weight_and_scales_and_zeros(weight_bf16, groupsize, inner_k_til
     weight_int32, scales_and_zeros = group_quantize_tensor(
         weight_bf16, n_bit=4, groupsize=groupsize
     )
-    # weight_uint8 = weight_int32.to(torch.uint8)
-    # weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(weight_uint8, inner_k_tiles)
     weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(
         weight_int32, inner_k_tiles
     )
@@ -532,7 +530,6 @@ class WeightOnlyInt4Linear(torch.nn.Module):
 
 
 class WeightAndActivationInt8QuantHandler(WeightOnlyInt8QuantHandler):
-
     def __init__(self, mod):
         self.mod = mod
 
@@ -556,7 +553,6 @@ class WeightAndActivationInt8QuantHandler(WeightOnlyInt8QuantHandler):
 
 
 class WeightAndActivationInt8Linear(torch.nn.Module):
-
     def __init__(
         self,
         in_features: int,
@@ -592,19 +588,6 @@ class WeightAndActivationInt8Linear(torch.nn.Module):
         )
         return F.linear(x_dequant, weight_dequant, self.bias)
 
-        # weight_dequant = (self.weight.float() * self.scales.unsqueeze(1)).to(x.dtype)
-        # x_dequant = (x_int8.T.float() * act_scale).reshape(orig_shape).to(weight_dequant.dtype)
-        # return F.linear(x_dequant, weight_dequant, self.bias)
-
-
-# def materialize_tensor(tensor, device, as_parameter=False):
-#     if tensor.is_meta:
-#         initialized_tensor = torch.empty_like(tensor, device=device)
-#         if as_parameter:
-#             return torch.nn.Parameter(initialized_tensor)
-#         return initialized_tensor
-#     return tensor
-
 
 def replace_linear_weight_and_activation_int8(module):
     for name, child in module.named_children():
@@ -616,44 +599,7 @@ def replace_linear_weight_and_activation_int8(module):
                     child.in_features, child.out_features, bias=child.bias is not None
                 ),
             )
-            # # Create new int8-compatible layer
-            # new_layer = WeightAndActivationInt8Linear(
-            #     child.in_features,
-            #     child.out_features,
-            #     bias=child.bias is not None,
-            #     device=("cuda" if torch.cuda.is_available() else "cpu"),
-            #     dtype=torch.float32,
-            # )
-            # # Materialize weight and bias, ensuring they are non-Meta
-            # with torch.no_grad():
-            #     if child.weight.is_meta:
-            #         child.weight = torch.empty_like(
-            #             child.weight, device=new_layer.weight.device
-            #         )
-            #     new_layer.weight.copy_(
-            #         child.weight.detach().to(torch.int8)
-            #     )  # Convert to int8 directly
-
-            #     if hasattr(child, "bias") and child.bias is not None:
-            #         if child.bias.is_meta:
-            #             child.bias = torch.empty_like(
-            #                 child.bias, device=new_layer.weight.device
-            #             )
-            #         new_layer.bias.copy_(child.bias.detach())
-
-            # # Handle scales (initialize to ones if not present)
-            # new_layer.scales = torch.ones(
-            #     new_layer.weight.size(0),
-            #     dtype=torch.bfloat16,
-            #     device=new_layer.weight.device,
-            # )
-            # new_layer.act_scale = torch.tensor(
-            #     1.0, dtype=torch.bfloat16, device=new_layer.weight.device
-            # )
-            # Replace the layer in the parent module
-            # setattr(module, name, new_layer)
         else:
-            # Recurse into child modules
             replace_linear_weight_and_activation_int8(child)
     return module
 
@@ -688,17 +634,25 @@ def quantize(
     model = model.to(dtype=precision, device=device)
 
     if mode == 'int8':
-        # print("Quantizing model weights for int8 weight-only symmetric per-channel quantization")
-        # quant_handler = WeightOnlyInt8QuantHandler(model)
+        print(
+            "Quantizing model weights for int8 weight-only symmetric per-channel quantization"
+        )
+        quant_handler = WeightOnlyInt8QuantHandler(model)
+        quantized_state_dict = quant_handler.create_quantized_state_dict()
+
+        dir_name = checkpoint_path.parent
+        base_name = checkpoint_path.name
+        new_base_name = base_name.replace(".pth", f"{label}int8.pth")
+
+    elif mode == "int8-activation":
         print(
             "Quantizing model weights for int8 weight and activation symmetric per-channel quantization"
         )
         quant_handler = WeightAndActivationInt8QuantHandler(model)
         quantized_state_dict = quant_handler.create_quantized_state_dict()
-
         dir_name = checkpoint_path.parent
         base_name = checkpoint_path.name
-        new_base_name = base_name.replace('.pth', f'{label}int8.pth')
+        new_base_name = base_name.replace(".pth", f"{label}int8-activation.pth")
 
     elif mode == 'int4':
         print("Quantizing model weights for int4 weight-only affine per-channel groupwise quantization")
