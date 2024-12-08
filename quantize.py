@@ -739,13 +739,6 @@ def hybrid_quantize(
 ) -> None:
     """
     Quantize a model using hybrid Int8/Int4 quantization.
-
-    Args:
-        checkpoint_path: Path to model checkpoint
-        int4_groupsize: Group size for Int4 quantization
-        inner_k_tiles: Tile size for Int4 quantization
-        critical_layers: List of layer names to use Int8 quantization for
-        label: Label to add to output filename
     """
     device = "cpu"
     precision = torch.bfloat16
@@ -761,14 +754,28 @@ def hybrid_quantize(
     model = model.to(dtype=precision, device=device)
 
     print("Applying hybrid quantization...")
-    quant_handler = HybridQuantHandler(
-        model,
-        int4_groupsize=int4_groupsize,
-        inner_k_tiles=inner_k_tiles,
-        critical_layers=critical_layers,
-    )
+    # First quantize layers that should use int8
+    int8_dict = {}
+    print("Quantizing int8 layers...")
+    int8_handler = WeightOnlyInt8QuantHandler(model)
+    int8_state_dict = int8_handler.create_quantized_state_dict()
 
-    quantized_state_dict = quant_handler.create_quantized_state_dict()
+    # Then quantize remaining layers with int4
+    print("Quantizing int4 layers...")
+    int4_handler = WeightOnlyInt4QuantHandler(model, int4_groupsize, inner_k_tiles)
+    int4_state_dict = int4_handler.create_quantized_state_dict()
+
+    # Combine the state dicts based on layer type
+    quantized_state_dict = {}
+    for key in checkpoint.keys():
+        if any(
+            critical in key for critical in (critical_layers or ["embed", "output"])
+        ):
+            if key in int8_state_dict:
+                quantized_state_dict[key] = int8_state_dict[key]
+        else:
+            if key in int4_state_dict:
+                quantized_state_dict[key] = int4_state_dict[key]
 
     # Save quantized model
     dir_name = checkpoint_path.parent
