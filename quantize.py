@@ -605,7 +605,6 @@ def replace_linear_weight_and_activation_int8(module):
 
 
 class HybridQuantHandler(QuantHandler):
-
     def __init__(self, mod, int4_groupsize=128, inner_k_tiles=8, critical_layers=None):
         self.mod = mod
         self.int4_groupsize = int4_groupsize
@@ -613,32 +612,32 @@ class HybridQuantHandler(QuantHandler):
         self.critical_layers = critical_layers or self._get_default_critical_layers()
 
     def _get_default_critical_layers(self):
-        """Determines which layers should use Int8 quantization by default."""
         critical_layers = set()
         for name, module in self.mod.named_modules():
-            # Use Int8 for embedding and output layers
             if isinstance(module, torch.nn.Embedding) or "output" in name.lower():
                 critical_layers.add(name)
         return critical_layers
 
-    def _prepare_int4_weight(self, weight, groupsize, inner_k_tiles):
-        """Prepare weight for int4 quantization with proper reshaping"""
-        weight_int32, scales_and_zeros = group_quantize_tensor(
-            weight.to(torch.bfloat16), n_bit=4, groupsize=groupsize
-        )
-        # Convert to proper format expected by the model
-        weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(
-            weight_int32, inner_k_tiles
-        )
-        return weight_int4pack, scales_and_zeros
+    def _unpack_int4_weight(self, packed_weight):
+        """Convert packed int4 weight to standard format"""
+        # Reshape from [out_per_group, in_per_group, groups, pack_factor] to [out, in]
+        out_features = packed_weight.shape[0] * self.int4_groupsize
+        in_features = packed_weight.shape[1] * self.int4_groupsize
+        return packed_weight.reshape(out_features, in_features)
+
+    def _process_scales_and_zeros(self, scales_and_zeros):
+        """Extract just scales from combined scales_and_zeros"""
+        # scales_and_zeros has shape [groups, features, 2]
+        # We want just the scales with shape [features]
+        scales = scales_and_zeros[..., 0].reshape(-1)  # Flatten to [features]
+        return scales
 
     @torch.no_grad()
     def create_quantized_state_dict(self):
-        """Creates a state dict compatible with the model's expected format"""
         cur_state_dict = self.mod.state_dict()
         quantized_dict = {}
 
-        # First copy all non-Linear layer parameters directly
+        # Copy non-Linear layer parameters
         for key, value in cur_state_dict.items():
             if not any(
                 s in key for s in ["attention.wqkv", "attention.wo", "feed_forward.w"]
@@ -653,26 +652,30 @@ class HybridQuantHandler(QuantHandler):
             use_int8 = any(critical in name for critical in self.critical_layers)
 
             if use_int8:
-                # Apply Int8 quantization with format matching model expectations
+                # Int8 quantization
                 int8_weight, scales, _ = dynamically_quantize_per_channel(
                     module.weight.float(), -128, 127, torch.int8
                 )
                 quantized_dict[f"{name}.weight"] = int8_weight
                 quantized_dict[f"{name}.scales"] = scales.to(module.weight.dtype)
             else:
-                # Check if dimensions are compatible with int4
+                # Int4 quantization with proper reshaping
                 if _check_linear_int4_k(
                     module.weight.shape[1], self.int4_groupsize, self.inner_k_tiles
                 ):
-                    weight_int4pack, scales_and_zeros = self._prepare_int4_weight(
-                        module.weight, self.int4_groupsize, self.inner_k_tiles
+                    weight_int32, scales_and_zeros = group_quantize_tensor(
+                        module.weight.to(torch.bfloat16),
+                        n_bit=4,
+                        groupsize=self.int4_groupsize,
                     )
-                    quantized_dict[f"{name}.weight"] = weight_int4pack
-                    quantized_dict[f"{name}.scales"] = scales_and_zeros.to(
-                        module.weight.dtype
-                    )
+                    # Convert to proper shape
+                    unpacked_weight = self._unpack_int4_weight(weight_int32)
+                    scales = self._process_scales_and_zeros(scales_and_zeros)
+
+                    quantized_dict[f"{name}.weight"] = unpacked_weight
+                    quantized_dict[f"{name}.scales"] = scales
                 else:
-                    # Fallback to Int8 if dimensions aren't compatible
+                    # Fallback to Int8
                     print(
                         f"Falling back to Int8 for {name} due to dimension constraints"
                     )
@@ -685,7 +688,7 @@ class HybridQuantHandler(QuantHandler):
         return quantized_dict
 
     def convert_for_runtime(self):
-        """Converts the model for runtime by replacing linear layers with quantized versions"""
+        """Convert model to run with quantized weights"""
         for name, module in self.mod.named_modules():
             if isinstance(module, nn.Linear):
                 parent_name = ".".join(name.split(".")[:-1])
