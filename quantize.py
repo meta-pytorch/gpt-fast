@@ -605,105 +605,87 @@ def replace_linear_weight_and_activation_int8(module):
 
 
 class HybridQuantHandler(QuantHandler):
-    def __init__(self, mod, int4_groupsize=128, inner_k_tiles=8, critical_layers=None):
-        """
-        Hybrid quantization handler that combines Int8 and Int4 quantization.
 
-        Args:
-            mod: The model to quantize
-            int4_groupsize: Group size for Int4 quantization
-            inner_k_tiles: Tile size for Int4 quantization
-            critical_layers: List of layer names that should use Int8 quantization.
-                           If None, will use heuristics to determine critical layers.
-        """
+    def __init__(self, mod, int4_groupsize=128, inner_k_tiles=8, critical_layers=None):
         self.mod = mod
         self.int4_groupsize = int4_groupsize
         self.inner_k_tiles = inner_k_tiles
         self.critical_layers = critical_layers or self._get_default_critical_layers()
 
-        # Initialize sub-handlers
-        self.int8_handler = WeightOnlyInt8QuantHandler(None)  # Will set mod later
-        self.int4_handler = WeightOnlyInt4QuantHandler(
-            None, int4_groupsize, inner_k_tiles
-        )  # Will set mod later
-
     def _get_default_critical_layers(self):
-        """
-        Determines which layers should use Int8 quantization by default.
-        Default strategy: Use Int8 for embedding layers and final layer.
-        """
+        """Determines which layers should use Int8 quantization by default."""
         critical_layers = set()
-
         for name, module in self.mod.named_modules():
-            # Use Int8 for embedding layers as they're critical for token representation
-            if isinstance(module, torch.nn.Embedding):
+            # Use Int8 for embedding and output layers
+            if isinstance(module, torch.nn.Embedding) or "output" in name.lower():
                 critical_layers.add(name)
-
-            # Use Int8 for final layer as it's critical for output quality
-            if isinstance(module, torch.nn.Linear) and "output" in name.lower():
-                critical_layers.add(name)
-
         return critical_layers
+
+    def _prepare_int4_weight(self, weight, groupsize, inner_k_tiles):
+        """Prepare weight for int4 quantization with proper reshaping"""
+        weight_int32, scales_and_zeros = group_quantize_tensor(
+            weight.to(torch.bfloat16), n_bit=4, groupsize=groupsize
+        )
+        # Convert to proper format expected by the model
+        weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(
+            weight_int32, inner_k_tiles
+        )
+        return weight_int4pack, scales_and_zeros
 
     @torch.no_grad()
     def create_quantized_state_dict(self):
-        """Creates a mixed-precision quantized state dictionary."""
+        """Creates a state dict compatible with the model's expected format"""
         cur_state_dict = self.mod.state_dict()
-        quantized_state_dict = {}
+        quantized_dict = {}
 
-        for fqn, mod in self.mod.named_modules():
-            if not isinstance(mod, torch.nn.Linear):
+        # First copy all non-Linear layer parameters directly
+        for key, value in cur_state_dict.items():
+            if not any(
+                s in key for s in ["attention.wqkv", "attention.wo", "feed_forward.w"]
+            ):
+                quantized_dict[key] = value
+
+        # Handle Linear layers
+        for name, module in self.mod.named_modules():
+            if not isinstance(module, torch.nn.Linear):
                 continue
 
-            # Determine quantization method for this layer
-            use_int8 = any(critical in fqn for critical in self.critical_layers)
+            use_int8 = any(critical in name for critical in self.critical_layers)
 
             if use_int8:
-                # Apply Int8 quantization
+                # Apply Int8 quantization with format matching model expectations
                 int8_weight, scales, _ = dynamically_quantize_per_channel(
-                    mod.weight.float(), -128, 127, torch.int8
+                    module.weight.float(), -128, 127, torch.int8
                 )
-                quantized_state_dict[f"{fqn}.weight"] = int8_weight
-                quantized_state_dict[f"{fqn}.scales"] = scales.to(mod.weight.dtype)
-                quantized_state_dict[f"{fqn}.quant_type"] = torch.tensor(
-                    [8], dtype=torch.int8
-                )
-
+                quantized_dict[f"{name}.weight"] = int8_weight
+                quantized_dict[f"{name}.scales"] = scales.to(module.weight.dtype)
             else:
-                # Apply Int4 quantization if layer dimensions are compatible
+                # Check if dimensions are compatible with int4
                 if _check_linear_int4_k(
-                    mod.weight.shape[1], self.int4_groupsize, self.inner_k_tiles
+                    module.weight.shape[1], self.int4_groupsize, self.inner_k_tiles
                 ):
-                    weight_int4pack, scales_and_zeros = (
-                        prepare_int4_weight_and_scales_and_zeros(
-                            mod.weight.to(torch.bfloat16),
-                            self.int4_groupsize,
-                            self.inner_k_tiles,
-                        )
+                    weight_int4pack, scales_and_zeros = self._prepare_int4_weight(
+                        module.weight, self.int4_groupsize, self.inner_k_tiles
                     )
-                    quantized_state_dict[f"{fqn}.weight"] = weight_int4pack
-                    quantized_state_dict[f"{fqn}.scales_and_zeros"] = scales_and_zeros
-                    quantized_state_dict[f"{fqn}.quant_type"] = torch.tensor(
-                        [4], dtype=torch.int8
+                    quantized_dict[f"{name}.weight"] = weight_int4pack
+                    quantized_dict[f"{name}.scales"] = scales_and_zeros.to(
+                        module.weight.dtype
                     )
                 else:
-                    # Fallback to Int8 if dimensions aren't compatible with Int4
+                    # Fallback to Int8 if dimensions aren't compatible
                     print(
-                        f"Warning: Falling back to Int8 for layer {fqn} due to dimension constraints"
+                        f"Falling back to Int8 for {name} due to dimension constraints"
                     )
                     int8_weight, scales, _ = dynamically_quantize_per_channel(
-                        mod.weight.float(), -128, 127, torch.int8
+                        module.weight.float(), -128, 127, torch.int8
                     )
-                    quantized_state_dict[f"{fqn}.weight"] = int8_weight
-                    quantized_state_dict[f"{fqn}.scales"] = scales.to(mod.weight.dtype)
-                    quantized_state_dict[f"{fqn}.quant_type"] = torch.tensor(
-                        [8], dtype=torch.int8
-                    )
+                    quantized_dict[f"{name}.weight"] = int8_weight
+                    quantized_dict[f"{name}.scales"] = scales.to(module.weight.dtype)
 
-        return quantized_state_dict
+        return quantized_dict
 
     def convert_for_runtime(self):
-        """Converts the model for runtime by replacing linear layers with quantized versions."""
+        """Converts the model for runtime by replacing linear layers with quantized versions"""
         for name, module in self.mod.named_modules():
             if isinstance(module, nn.Linear):
                 parent_name = ".".join(name.split(".")[:-1])
@@ -712,16 +694,17 @@ class HybridQuantHandler(QuantHandler):
                     self.mod if parent_name == "" else get_attr(self.mod, parent_name)
                 )
 
-                # Determine quantization type from state dict
-                quant_type = get_attr(self.mod, f"{name}.quant_type")[0].item()
+                use_int8 = any(critical in name for critical in self.critical_layers)
 
-                if quant_type == 8:
+                if use_int8 or not _check_linear_int4_k(
+                    module.in_features, self.int4_groupsize, self.inner_k_tiles
+                ):
                     new_module = WeightOnlyInt8Linear(
                         module.in_features,
                         module.out_features,
                         bias=module.bias is not None,
                     )
-                else:  # quant_type == 4
+                else:
                     new_module = WeightOnlyInt4Linear(
                         module.in_features,
                         module.out_features,
