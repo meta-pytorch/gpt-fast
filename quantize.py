@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, Set
 from tokenizer import get_tokenizer
 
 try:
