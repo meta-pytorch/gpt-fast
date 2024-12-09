@@ -605,7 +605,7 @@ def replace_linear_weight_and_activation_int8(module):
     return module
 
 
-class HybridQuantHandler:
+class HybridQuantHandler(QuantHandler):
     def __init__(
         self,
         model: nn.Module,
