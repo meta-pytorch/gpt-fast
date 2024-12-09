@@ -530,7 +530,7 @@ class WeightOnlyInt4Linear(torch.nn.Module):
         )
 
 
-class WeightAndActivationInt8QuantHandler(WeightOnlyInt8QuantHandler):
+class WeightAndActivationInt8QuantHandler:
     def __init__(self, mod):
         self.mod = mod
 
@@ -605,8 +605,7 @@ def replace_linear_weight_and_activation_int8(module):
     return module
 
 
-class HybridQuantHandler(QuantHandler):
-
+class HybridQuantHandler:
     def __init__(
         self,
         model: nn.Module,
@@ -743,16 +742,17 @@ class HybridQuantHandler(QuantHandler):
 
 
 def hybrid_quantize(
-    checkpoint_path: Union[str, Path],
+    checkpoint_path: Path = Path("checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth"),
     int4_groupsize: int = 128,
     inner_k_tiles: int = 8,
     critical_layers: Optional[List[str]] = None,
     label: str = "",
 ) -> None:
     """Quantize a model using hybrid INT8/INT4 quantization."""
+    assert checkpoint_path.is_file(), checkpoint_path
+
     device = "cpu"
     precision = torch.bfloat16
-    checkpoint_path = Path(checkpoint_path)
 
     print("Loading model...")
     t0 = time.time()
