@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Set
+from typing import Optional, Set, Union, List
 from tokenizer import get_tokenizer
 
 try:
@@ -884,7 +884,6 @@ def quantize(
     quantize_path.unlink(missing_ok=True) # remove existing file if one already there
     torch.save(quantized_state_dict, quantize_path)
     print(f"Quantization complete took {time.time() - t0:.02f} seconds")
-    return
 
 if __name__ == '__main__':
     import argparse
