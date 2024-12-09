@@ -743,7 +743,7 @@ class HybridQuantHandler(QuantHandler):
 
 def hybrid_quantize(
     checkpoint_path: Path = Path("checkpoints/meta-llama/Llama-2-7b-chat-hf/model.pth"),
-    int4_groupsize: int = 128,
+    int4_groupsize: int = 32,
     inner_k_tiles: int = 8,
     critical_layers: Optional[List[str]] = None,
     label: str = "",
