@@ -605,190 +605,191 @@ def replace_linear_weight_and_activation_int8(module):
 
 
 class HybridQuantHandler(QuantHandler):
-    def __init__(self, mod, int4_groupsize=128, inner_k_tiles=8, critical_layers=None):
-        self.mod = mod
+
+    def __init__(
+        self,
+        model: nn.Module,
+        int4_groupsize: int = 128,
+        inner_k_tiles: int = 8,
+        critical_layers: Optional[Set[str]] = None,
+    ):
+        super().__init__(model)
+        self.model = model
         self.int4_groupsize = int4_groupsize
         self.inner_k_tiles = inner_k_tiles
         self.critical_layers = critical_layers or self._get_default_critical_layers()
 
-    def _get_default_critical_layers(self):
+    def _get_default_critical_layers(self) -> Set[str]:
         critical_layers = set()
-        for name, module in self.mod.named_modules():
-            if isinstance(module, torch.nn.Embedding) or "output" in name.lower():
+        for name, module in self.model.named_modules():
+            # Embeddings
+            if isinstance(module, torch.nn.Embedding):
                 critical_layers.add(name)
+
+            # Output layers
+            if any(x in name.lower() for x in ["output", "head", "classifier"]):
+                critical_layers.add(name)
+
+            # First attention layer in each block
+            if "attention.0" in name or "self_attn.0" in name:
+                critical_layers.add(name)
+
+            # Value projections in attention
+            if any(x in name for x in ["v_proj", "value", "wv"]):
+                critical_layers.add(name)
+
+            # Layer normalization
+            if isinstance(module, (torch.nn.LayerNorm, nn.LayerNorm)):
+                critical_layers.add(name)
+
+            # First layer of feed-forward blocks
+            if any(x in name for x in ["mlp.0", "ffn.0", "w1"]):
+                critical_layers.add(name)
+
         return critical_layers
 
-    def _unpack_int4_weight(self, packed_weight):
-        """Convert packed int4 weight to standard format"""
-        # Reshape from [out_per_group, in_per_group, groups, pack_factor] to [out, in]
-        out_features = packed_weight.shape[0] * self.int4_groupsize
-        in_features = packed_weight.shape[1] * self.int4_groupsize
-        return packed_weight.reshape(out_features, in_features)
+    def _should_use_int4(self, name: str, module: nn.Module) -> bool:
+        """Determine if a layer should use INT4 quantization."""
+        if any(critical in name for critical in self.critical_layers):
+            return False
 
-    def _process_scales_and_zeros(self, scales_and_zeros):
-        """Extract just scales from combined scales_and_zeros"""
-        # scales_and_zeros has shape [groups, features, 2]
-        # We want just the scales with shape [features]
-        scales = scales_and_zeros[..., 0].reshape(-1)  # Flatten to [features]
-        return scales
+        is_int4_candidate = any(
+            [
+                any(x in name for x in ["mlp.1", "ffn.1", "w2", "w3"]),
+                any(x in name for x in ["q_proj", "k_proj", "wq", "wk"]),
+                "attention" in name and not any(x in name for x in ["0", "output"]),
+                "transformer" in name and not any(x in name for x in ["0", "final"]),
+            ]
+        )
+
+        if isinstance(module, nn.Linear):
+            return is_int4_candidate and _check_linear_int4_k(
+                module.weight.shape[1], self.int4_groupsize, self.inner_k_tiles
+            )
+
+        return is_int4_candidate
 
     @torch.no_grad()
-    def create_quantized_state_dict(self):
-        cur_state_dict = self.mod.state_dict()
+    def create_quantized_state_dict(self) -> dict:
+        """Create a state dict with mixed INT4/INT8 quantization."""
+        cur_state_dict = self.model.state_dict()
         quantized_dict = {}
 
-        # Copy non-Linear layer parameters
+        # Copy non-Linear layer parameters directly
         for key, value in cur_state_dict.items():
             if not any(
-                s in key for s in ["attention.wqkv", "attention.wo", "feed_forward.w"]
+                s in key for s in ["attention", "feed_forward", "mlp", "w1", "w2", "w3"]
             ):
                 quantized_dict[key] = value
 
-        # Handle Linear layers
-        for name, module in self.mod.named_modules():
+        # Handle Linear layers with appropriate quantization
+        for name, module in self.model.named_modules():
             if not isinstance(module, torch.nn.Linear):
                 continue
-
-            use_int8 = any(critical in name for critical in self.critical_layers)
-
-            if use_int8:
-                # Int8 quantization
-                int8_weight, scales, _ = dynamically_quantize_per_channel(
-                    module.weight.float(), -128, 127, torch.int8
-                )
-                quantized_dict[f"{name}.weight"] = int8_weight
-                quantized_dict[f"{name}.scales"] = scales.to(module.weight.dtype)
-            else:
-                # Int4 quantization with proper reshaping
-                if _check_linear_int4_k(
-                    module.weight.shape[1], self.int4_groupsize, self.inner_k_tiles
-                ):
+            try:
+                if self._should_use_int4(name, module):
+                    # Use existing INT4 quantization
                     weight_int32, scales_and_zeros = group_quantize_tensor(
                         module.weight.to(torch.bfloat16),
                         n_bit=4,
                         groupsize=self.int4_groupsize,
                     )
-                    # Convert to proper shape
-                    unpacked_weight = self._unpack_int4_weight(weight_int32)
-                    scales = self._process_scales_and_zeros(scales_and_zeros)
-
-                    quantized_dict[f"{name}.weight"] = unpacked_weight
-                    quantized_dict[f"{name}.scales"] = scales
-                else:
-                    # Fallback to Int8
-                    print(
-                        f"Falling back to Int8 for {name} due to dimension constraints"
+                    weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(
+                        weight_int32, self.inner_k_tiles
                     )
+                    quantized_dict[f"{name}.weight"] = weight_int4pack
+                    quantized_dict[f"{name}.scales_and_zeros"] = scales_and_zeros
+                    print(f"Applied INT4 quantization to {name}")
+                else:
+                    # Use existing INT8 quantization
                     int8_weight, scales, _ = dynamically_quantize_per_channel(
                         module.weight.float(), -128, 127, torch.int8
                     )
                     quantized_dict[f"{name}.weight"] = int8_weight
                     quantized_dict[f"{name}.scales"] = scales.to(module.weight.dtype)
+                    print(f"Applied INT8 quantization to {name}")
+
+            except Exception as e:
+                print(f"Error quantizing layer {name}: {str(e)}")
+                quantized_dict[f"{name}.weight"] = module.weight
 
         return quantized_dict
 
-    def convert_for_runtime(self):
-        """Convert model to run with quantized weights"""
-        for name, module in self.mod.named_modules():
-            if isinstance(module, nn.Linear):
-                parent_name = ".".join(name.split(".")[:-1])
-                child_name = name.split(".")[-1]
-                parent_module = (
-                    self.mod if parent_name == "" else get_attr(self.mod, parent_name)
-                )
-
-                use_int8 = any(critical in name for critical in self.critical_layers)
-
-                if use_int8 or not _check_linear_int4_k(
-                    module.in_features, self.int4_groupsize, self.inner_k_tiles
-                ):
-                    new_module = WeightOnlyInt8Linear(
-                        module.in_features,
-                        module.out_features,
-                        bias=module.bias is not None,
-                    )
+    def convert_for_runtime(self) -> nn.Module:
+        def replace_linear_hybrid(module):
+            for name, child in module.named_children():
+                if isinstance(child, nn.Linear):
+                    if self._should_use_int4(name, child):
+                        new_module = WeightOnlyInt4Linear(
+                            child.in_features,
+                            child.out_features,
+                            bias=child.bias is not None,
+                            groupsize=self.int4_groupsize,
+                            inner_k_tiles=self.inner_k_tiles,
+                        )
+                    else:
+                        new_module = WeightOnlyInt8Linear(
+                            child.in_features,
+                            child.out_features,
+                            bias=child.bias is not None,
+                        )
+                    setattr(module, name, new_module)
                 else:
-                    new_module = WeightOnlyInt4Linear(
-                        module.in_features,
-                        module.out_features,
-                        bias=module.bias is not None,
-                        groupsize=self.int4_groupsize,
-                        inner_k_tiles=self.inner_k_tiles,
-                    )
+                    replace_linear_hybrid(child)
 
-                setattr(parent_module, child_name, new_module)
-
-        return self.mod
-
-
-def get_attr(module, name):
-    """Helper function to get nested module attributes."""
-    attrs = name.split(".")
-    curr_mod = module
-    for attr in attrs:
-        curr_mod = getattr(curr_mod, attr)
-    return curr_mod
+        replace_linear_hybrid(self.model)
+        return self.model
 
 
 def hybrid_quantize(
-    checkpoint_path: Path,
+    checkpoint_path: Union[str, Path],
     int4_groupsize: int = 128,
     inner_k_tiles: int = 8,
-    critical_layers: list = None,
+    critical_layers: Optional[List[str]] = None,
     label: str = "",
 ) -> None:
-    """
-    Quantize a model using hybrid Int8/Int4 quantization.
-    """
+    """Quantize a model using hybrid INT8/INT4 quantization."""
     device = "cpu"
     precision = torch.bfloat16
+    checkpoint_path = Path(checkpoint_path)
 
     print("Loading model...")
     t0 = time.time()
 
-    with torch.device("meta"):
-        model = Transformer.from_name(checkpoint_path.parent.name)
+    try:
+        with torch.device("meta"):
+            model = Transformer.from_name(checkpoint_path.parent.name)
 
-    checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
-    model.load_state_dict(checkpoint, assign=True)
-    model = model.to(dtype=precision, device=device)
+        checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
+        model.load_state_dict(checkpoint, assign=True)
+        model = model.to(dtype=precision, device=device)
 
-    print("Applying hybrid quantization...")
-    # First quantize layers that should use int8
-    int8_dict = {}
-    print("Quantizing int8 layers...")
-    int8_handler = WeightOnlyInt8QuantHandler(model)
-    int8_state_dict = int8_handler.create_quantized_state_dict()
+        print("Applying hybrid quantization...")
+        handler = HybridQuantHandler(
+            model,
+            int4_groupsize=int4_groupsize,
+            inner_k_tiles=inner_k_tiles,
+            critical_layers=set(critical_layers) if critical_layers else None,
+        )
 
-    # Then quantize remaining layers with int4
-    print("Quantizing int4 layers...")
-    int4_handler = WeightOnlyInt4QuantHandler(model, int4_groupsize, inner_k_tiles)
-    int4_state_dict = int4_handler.create_quantized_state_dict()
+        quantized_state_dict = handler.create_quantized_state_dict()
 
-    # Combine the state dicts based on layer type
-    quantized_state_dict = {}
-    for key in checkpoint.keys():
-        if any(
-            critical in key for critical in (critical_layers or ["embed", "output"])
-        ):
-            if key in int8_state_dict:
-                quantized_state_dict[key] = int8_state_dict[key]
-        else:
-            if key in int4_state_dict:
-                quantized_state_dict[key] = int4_state_dict[key]
+        # Save quantized model
+        dir_name = checkpoint_path.parent
+        base_name = checkpoint_path.name
+        new_base_name = base_name.replace(
+            ".pth", f"{label}hybrid_int8_int4.g{int4_groupsize}.pth"
+        )
+        quantize_path = dir_name / new_base_name
 
-    # Save quantized model
-    dir_name = checkpoint_path.parent
-    base_name = checkpoint_path.name
-    new_base_name = base_name.replace(
-        ".pth", f"{label}hybrid_int8_int4.g{int4_groupsize}.pth"
-    )
-    quantize_path = dir_name / new_base_name
+        print(f"Writing quantized weights to {quantize_path}")
+        quantize_path.unlink(missing_ok=True)
+        torch.save(quantized_state_dict, quantize_path)
+        print(f"Quantization complete, took {time.time() - t0:.02f} seconds")
 
-    print(f"Writing quantized weights to {quantize_path}")
-    quantize_path.unlink(missing_ok=True)
-    torch.save(quantized_state_dict, quantize_path)
-    print(f"Quantization complete, took {time.time() - t0:.02f} seconds")
+    except Exception as e:
+        print(f"Error during quantization: {str(e)}")
+        raise
 
 
 def quantize(
