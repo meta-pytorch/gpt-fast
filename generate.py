@@ -221,6 +221,13 @@ def _load_model(checkpoint_path, device, precision, use_tp):
     with torch.device('meta'):
         model = Transformer.from_name(checkpoint_path.parent.name)
 
+    if "hybrid" in str(checkpoint_path):
+        print("Using int4, int8 hybrid quantization!")
+        from quantize import HybridQuantHandler
+
+        simple_quantizer = HybridQuantHandler(model)
+        model.simple_quantizer.convert_for_runtime()
+
     if "int8-activation" in str(checkpoint_path):
         print("Using int8 weight-activation quantization!")
         from quantize import WeightAndActivationInt8QuantHandler
