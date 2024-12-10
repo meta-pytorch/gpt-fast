@@ -647,6 +647,10 @@ class HybridQuantHandler(QuantHandler):
             if any(x in name for x in ["mlp.0", "ffn.0", "w1"]):
                 critical_layers.add(name)
 
+            # Output projections in attention
+            if any(x in name for x in ["wo", "out_proj"]):
+                critical_layers.add(name)
+
         return critical_layers
 
     def _should_use_int4(self, name: str, module: nn.Module) -> bool:
@@ -658,7 +662,8 @@ class HybridQuantHandler(QuantHandler):
             [
                 any(x in name for x in ["mlp.1", "ffn.1", "w2", "w3"]),
                 any(x in name for x in ["q_proj", "k_proj", "wq", "wk"]),
-                "attention" in name and not any(x in name for x in ["0", "output"]),
+                "attention" in name
+                and not any(x in name for x in ["0", "output", "wo"]),
                 "transformer" in name and not any(x in name for x in ["0", "final"]),
             ]
         )
