@@ -674,18 +674,20 @@ class HybridQuantHandler(QuantHandler):
     def create_quantized_state_dict(self) -> dict:
         """Create a state dict with mixed INT4/INT8 quantization."""
         cur_state_dict = self.model.state_dict()
-        quantized_dict = {}
+        quantized_dict = cur_state_dict.copy()
 
-        # Copy non-Linear layer parameters directly
-        for key, value in cur_state_dict.items():
-            if not any(
-                s in key for s in ["attention", "feed_forward", "mlp", "w1", "w2", "w3"]
-            ):
-                quantized_dict[key] = value
+        # # Copy non-Linear layer parameters directly
+        # for key, value in cur_state_dict.items():
+        #     if not any(
+        #         s in key for s in ["attention", "feed_forward", "mlp", "w1", "w2", "w3"]
+        #     ):
+        #         quantized_dict[key] = value
 
         # Handle Linear layers with appropriate quantizaton
         for name, module in self.model.named_modules():
-            if not isinstance(module, torch.nn.Linear):
+            if not isinstance(
+                module, torch.nn.Linear
+            ):  # if isinstance(mod, torch.nn.Linear):
                 continue
             try:
                 if self._should_use_int4(name, module):
@@ -719,7 +721,7 @@ class HybridQuantHandler(QuantHandler):
     def convert_for_runtime(self) -> nn.Module:
         def replace_linear_hybrid(module):
             for name, child in module.named_children():
-                if isinstance(child, nn.Linear):
+                if isinstance(child, nn.Linear):  # if isinstance(child, nn.Linear):
                     if self._should_use_int4(name, child):
                         new_module = WeightOnlyInt4Linear(
                             child.in_features,
