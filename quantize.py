@@ -699,7 +699,7 @@ class HybridQuantHandler(QuantHandler):
                         weight_int32, self.inner_k_tiles
                     )
                     quantized_dict[f"{name}.weight"] = weight_int4pack
-                    quantized_dict[f"{name}.scales"] = scales_and_zeros
+                    quantized_dict[f"{name}.scales_and_zeros"] = scales_and_zeros
                     print(f"Applied INT4 quantization to {name}")
                 else:
                     # Use existing INT8 quantization
