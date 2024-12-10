@@ -228,21 +228,21 @@ def _load_model(checkpoint_path, device, precision, use_tp):
         simple_quantizer = HybridQuantHandler(model)
         model = simple_quantizer.convert_for_runtime()
 
-    if "int8-activation" in str(checkpoint_path):
+    elif "int8-activation" in str(checkpoint_path):
         print("Using int8 weight-activation quantization!")
         from quantize import WeightAndActivationInt8QuantHandler
 
         simple_quantizer = WeightAndActivationInt8QuantHandler(model)
         model = simple_quantizer.convert_for_runtime()
 
-    if "int8" in str(checkpoint_path):
+    elif "int8" in str(checkpoint_path):
         print("Using int8 weight-only quantization!")
         from quantize import WeightOnlyInt8QuantHandler
 
         simple_quantizer = WeightOnlyInt8QuantHandler(model)
         model = simple_quantizer.convert_for_runtime()
 
-    if "int4" in str(checkpoint_path):
+    elif "int4" in str(checkpoint_path):
         print("Using int4 weight-only quantization!")
         path_comps = checkpoint_path.name.split(".")
         groupsize = int(path_comps[-2][1:])
