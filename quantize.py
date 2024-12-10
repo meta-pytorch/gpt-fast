@@ -606,10 +606,11 @@ def replace_linear_weight_and_activation_int8(module):
 
 
 class HybridQuantHandler(QuantHandler):
+
     def __init__(
         self,
         model: nn.Module,
-        int4_groupsize: int = 128,
+        int4_groupsize: int = 32,
         inner_k_tiles: int = 8,
         critical_layers: Optional[Set[str]] = None,
     ):
