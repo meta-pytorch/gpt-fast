@@ -695,7 +695,7 @@ class HybridQuantHandler(QuantHandler):
                         n_bit=4,
                         groupsize=self.int4_groupsize,
                     )
-                    weigh_int4pack = torch.ops.aten._convert_weight_to_int4pack(
+                    weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(
                         weight_int32, self.inner_k_tiles
                     )
                     quantized_dict[f"{name}.weight"] = weight_int4pack
