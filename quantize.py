@@ -606,12 +606,12 @@ def replace_linear_weight_and_activation_int8(module):
 
 
 class HybridQuantHandler(QuantHandler):
-
     def __init__(
         self,
         model: nn.Module,
         int4_groupsize: int = 32,
         inner_k_tiles: int = 8,
+        padding: bool = True,
         critical_layers: Optional[Set[str]] = None,
     ):
         super().__init__(model)
@@ -619,6 +619,7 @@ class HybridQuantHandler(QuantHandler):
         self.int4_groupsize = int4_groupsize
         self.inner_k_tiles = inner_k_tiles
         self.critical_layers = critical_layers or self._get_default_critical_layers()
+        self.padding = padding
 
     def _get_default_critical_layers(self) -> Set[str]:
         critical_layers = set()
@@ -653,11 +654,10 @@ class HybridQuantHandler(QuantHandler):
 
         return critical_layers
 
-    def _should_use_int4(self, name: str, module: nn.Module) -> bool:
+    def _should_use_int4(self, name: str) -> bool:
         """Determine if a layer should use INT4 quantization."""
         if any(critical in name for critical in self.critical_layers):
             return False
-
         is_int4_candidate = any(
             [
                 any(x in name for x in ["mlp.1", "ffn.1", "w2", "w3"]),
@@ -667,43 +667,59 @@ class HybridQuantHandler(QuantHandler):
                 "transformer" in name and not any(x in name for x in ["0", "final"]),
             ]
         )
-
-        if isinstance(module, nn.Linear):
-            return is_int4_candidate and _check_linear_int4_k(
-                module.weight.shape[1], self.int4_groupsize, self.inner_k_tiles
-            )
-
         return is_int4_candidate
 
     @torch.no_grad()
-    def create_quantized_state_dict(self) -> dict:
+    def create_quantized_state_dict(self, use_cuda=True) -> dict:
         """Create a state dict with mixed INT4/INT8 quantization."""
         cur_state_dict = self.model.state_dict()
         quantized_dict = cur_state_dict.copy()
 
-        # # Copy non-Linear layer parameters directly
-        # for key, value in cur_state_dict.items():
-        #     if not any(
-        #         s in key for s in ["attention", "feed_forward", "mlp", "w1", "w2", "w3"]
-        #     ):
-        #         quantized_dict[key] = value
+        if use_cuda:
+            device = "cuda"
+        else:
+            device = "cpu"
 
-        # Handle Linear layers with appropriate quantizaton
         for name, module in self.model.named_modules():
             if not isinstance(
                 module, torch.nn.Linear
             ):  # if isinstance(mod, torch.nn.Linear):
                 continue
             try:
-                if self._should_use_int4(name, module):
+                if self._should_use_int4(name):
+                    assert not module.bias
+                    out_features = module.out_features
+                    in_features = module.in_features
+                    assert out_features % 8 == 0, "require out_features % 8 == 0"
+                    print(f"linear: {name}, in={in_features}, out={out_features}")
+
+                    weight = module.weight.data
+                    if not _check_linear_int4_k(
+                        in_features, self.int4_groupsize, self.inner_k_tiles
+                    ):
+                        if self.padding:
+                            from model import find_multiple
+
+                            print(
+                                f"warning: {name} is padded to satisfy in_features % 1024 == 0"
+                            )
+                            padded_in_features = find_multiple(in_features, 1024)
+                            weight = F.pad(
+                                weight, pad=(0, padded_in_features - in_features)
+                            )
+                        else:
+                            print(
+                                f"warning: {name} is skipped, int4 requires that in_features is 32, 64, or is divisible by 1024, "
+                                + "and that groupsize and inner_k_tiles*16 evenly divide into it"
+                            )
+                        continue
                     # Use existing INT4 quantization
-                    weight_int32, scales_and_zeros = group_quantize_tensor(
-                        module.weight.to(torch.bfloat16),
-                        n_bit=4,
-                        groupsize=self.int4_groupsize,
-                    )
-                    weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(
-                        weight_int32, self.inner_k_tiles
+                    weight_int4pack, scales_and_zeros = (
+                        prepare_int4_weight_and_scales_and_zeros(
+                            weight.to(torch.bfloat16).to(device=device),
+                            self.int4_groupsize,
+                            self.inner_k_tiles,
+                        )
                     )
                     quantized_dict[f"{name}.weight"] = weight_int4pack
                     quantized_dict[f"{name}.scales_and_zeros"] = scales_and_zeros
@@ -726,15 +742,22 @@ class HybridQuantHandler(QuantHandler):
     def convert_for_runtime(self) -> nn.Module:
         def replace_linear_hybrid(module):
             for name, child in module.named_children():
-                if isinstance(child, nn.Linear):  # if isinstance(child, nn.Linear):
-                    if self._should_use_int4(name, child):
-                        new_module = WeightOnlyInt4Linear(
+                if isinstance(child, nn.Linear):
+                    if self._should_use_int4(name):
+                        can_use_int4 = _check_linear_int4_k(
                             child.in_features,
-                            child.out_features,
-                            bias=child.bias is not None,
-                            groupsize=self.int4_groupsize,
-                            inner_k_tiles=self.inner_k_tiles,
+                            self.int4_groupsize,
+                            self.inner_k_tiles,
                         )
+                        if can_use_int4 or self.padding:
+                            new_module = WeightOnlyInt4Linear(
+                                child.in_features,
+                                child.out_features,
+                                bias=False,
+                                groupsize=self.int4_groupsize,
+                                inner_k_tiles=self.inner_k_tiles,
+                                padding=not can_use_int4,  # Only pad if needed
+                            )
                     else:
                         new_module = WeightOnlyInt8Linear(
                             child.in_features,
