@@ -1,0 +1,11 @@
+,duration,duration,duration,duration,occupancy,shared_memory,time_percentage
+,count,mean,sum,std,mean,mean,
+layer_type,,,,,,,
+activation,6400,1.88,12008.01,0.1,4.1,0.0,0.3
+attention,996,28.71,28593.12,53.04,3.0,57.67,0.71
+elementwise,2420,2.36,5701.33,1.13,6.7,0.0,0.14
+embedding,200,6.83,1366.98,0.44,36.0,1184.0,0.03
+linear,57704,67.96,3921317.41,96.31,52.51,6046.42,96.97
+memory,201,2.78,558.06,0.15,1.13,0.0,0.01
+normalization,13000,3.64,47323.52,0.55,0.23,49.51,1.17
+other,8570,3.13,26788.56,3.04,4.13,686.19,0.66
