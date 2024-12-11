@@ -15,6 +15,8 @@ class TorchProfileAnalyzer:
         'awq': 'AWQ',
         'gptq': 'GPTQ',
         'sqq': 'SQQ',
+        'int8_activation': 'INT8_activation',
+        'hybrid': 'hybrid'
     }
 
     def __init__(self):

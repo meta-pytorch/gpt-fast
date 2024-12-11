@@ -1,4 +1,44 @@
 # HPML Final Project: Optimization 
+
+## Set-up
+```bash
+export MODEL_REPO=meta-llama/Meta-Llama-3-8B
+export DEVICE=cuda
+```
+
+## Quantization
+Add --profile "profiles/int4_profile"
+### Run Command for INT4
+```bash
+python quantize.py --checkpoint_path checkpoints/$MODEL_REPO/model.pth --mode int4 --groupsize 32
+python generate.py --compile --checkpoint_path checkpoints/$MODEL_REPO/model_int4.g32.pth --prompt "Hello, my name is"
+```
+
+### Run Command for INT8
+```bash
+python quantize.py --checkpoint_path checkpoints/$MODEL_REPO/model.pth --mode int8
+python generate.py --compile --checkpoint_path checkpoints/$MODEL_REPO/model_int8.pth --prompt "Hello, my name is"
+```
+
+### Run Command for INT8-Activation
+```bash
+python quantize.py --checkpoint_path checkpoints/$MODEL_REPO/model.pth --mode int8-activation
+python generate.py --compile --checkpoint_path checkpoints/$MODEL_REPO/model_int8-activation.pth --prompt "Hello, my name is"
+```
+
+### Run Command for Hybrid (INT8 + INT4)
+```bash
+python quantize.py --checkpoint_path checkpoints/$MODEL_REPO/model.pth --mode hybrid --groupsize 32
+python generate.py --compile --checkpoint_path checkpoints/$MODEL_REPO/model_hybrid_int8_int4.g32.pth --prompt "Hello, my name is"
+```
+
+## Profiler Analysis
+
+### Run Command for INT4
+```bash
+python profiler_analysis.py --fp32 ./profiles/fp32_profile.json --quant-methods int8 int4 --profile-dir ./profiles --output-dir ./output
+```
+
 # gpt-fast
 Simple and efficient pytorch-native transformer text generation.
 
