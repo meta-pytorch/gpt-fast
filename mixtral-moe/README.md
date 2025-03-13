@@ -4,7 +4,7 @@
 ## Downloading Weights
 
 ```bash
-export MODEL_REPO=mistralai/Mixtral-8x7B-v0.1
+export MODEL_REPO=mistralai/Mixtral-8x7B-Instruct-v0.1
 python scripts/download.py --repo_id $MODEL_REPO
 python scripts/convert_hf_checkpoint.py --checkpoint_dir checkpoints/$MODEL_REPO
 ```
