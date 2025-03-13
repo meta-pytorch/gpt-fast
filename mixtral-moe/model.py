@@ -309,17 +309,17 @@ class ConditionalFeedForwardAOQuantizable(nn.Module):
 
         if x.shape[0]==1:
             # version 1 [should be fastest]
-            # out = torch.zeros_like(x) # T, D
-            # for activated_expert_idx in range(num_activated_experts):
-            #     cur_expert = expert_indices[:, activated_expert_idx].squeeze()
-            #     cur_weight = expert_weights[:, activated_expert_idx] # T'
+            out = torch.zeros_like(x) # T, D
+            for activated_expert_idx in range(num_activated_experts):
+                cur_expert = expert_indices[:, activated_expert_idx].squeeze()
+                cur_weight = expert_weights[:, activated_expert_idx] # T'
 
-            #     w1=self.w1[cur_expert] # I, D
-            #     w2=self.w2[cur_expert] # D, I
-            #     w3=self.w3[cur_expert] # I, D
+                w1=self.w1[cur_expert] # I, D
+                w2=self.w2[cur_expert] # D, I
+                w3=self.w3[cur_expert] # I, D
 
-            #     cur_out = F.linear( F.silu(F.linear(x, w1)) * F.linear(x, w3), w2) # T', D
-            #     out += cur_out * cur_weight
+                cur_out = F.linear( F.silu(F.linear(x, w1)) * F.linear(x, w3), w2) # T', D
+                out += cur_out * cur_weight
 
             # base version
             # w1_weights = self.w1[expert_indices] # [T, A, D, D]
@@ -331,7 +331,7 @@ class ConditionalFeedForwardAOQuantizable(nn.Module):
             # expert_outs =  torch.einsum('tao, taio -> tai', (x1 * x3), w2_weights)
             # return torch.einsum('tai,ta -> ti', expert_outs, expert_weights)
 
-            # modified base version
+            # modified base version (slightly faster)
             # w1 = self.w1[expert_indices].reshape(-1, self.w1.shape[-1]) # [T, A, D, D]
             # w3 = self.w3[expert_indices].reshape(-1, self.w3.shape[-1]) # [T, A, D, D]
             # w2_weights = self.w2[expert_indices]
@@ -348,23 +348,23 @@ class ConditionalFeedForwardAOQuantizable(nn.Module):
             # expert_list = [x for x in range(self.num_experts)]
 
             # augmented general version [why doesn't this work]
-            tok_indices_per_expert, tok_weights_per_expert = get_indices_and_weights_per_expert(F.pad(expert_indices, (0,0,0,1)), F.pad(expert_weights, (0,0,0,1)), self.num_experts)
-            expert_list = [x for x in range(self.num_experts)]
-            x = F.pad(x,(0,0,0,1))
+            # tok_indices_per_expert, tok_weights_per_expert = get_indices_and_weights_per_expert(F.pad(expert_indices, (0,0,0,1)), F.pad(expert_weights, (0,0,0,1)), self.num_experts)
+            # expert_list = [x for x in range(self.num_experts)]
+            # x = F.pad(x,(0,0,0,1))
 
-            out = torch.zeros_like(x) # T, D
-            for activated_expert_idx, expert in enumerate(expert_list):
-                w1=self.w1[expert] # I, D
-                w2=self.w2[expert] # D, I
-                w3=self.w3[expert] # I, D
+            # out = torch.zeros_like(x) # T, D
+            # for activated_expert_idx, expert in enumerate(expert_list):
+            #     w1=self.w1[expert] # I, D
+            #     w2=self.w2[expert] # D, I
+            #     w3=self.w3[expert] # I, D
 
-                tok_indices = tok_indices_per_expert[activated_expert_idx]
-                cur_x = x[tok_indices] # T', D
-                cur_weights = tok_weights_per_expert[activated_expert_idx] # T'
+            #     tok_indices = tok_indices_per_expert[activated_expert_idx]
+            #     cur_x = x[tok_indices] # T', D
+            #     cur_weights = tok_weights_per_expert[activated_expert_idx] # T'
 
-                cur_out = F.linear( F.silu(F.linear(cur_x, w1)) * F.linear(cur_x, w3), w2) # T', D
-                out[tok_indices] += cur_out * cur_weights
-            return out[:-1]
+            #     cur_out = F.linear( F.silu(F.linear(cur_x, w1)) * F.linear(cur_x, w3), w2) # T', D
+            #     out[tok_indices] += cur_out * cur_weights
+            # return out[:-1]
         else:
             # This works for both cases but isn't quantizable when only 1 token
             tok_indices_per_expert, tok_weights_per_expert = get_indices_and_weights_per_expert(expert_indices, expert_weights, self.num_experts)
