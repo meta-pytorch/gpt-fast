@@ -14,7 +14,7 @@ export MODEL_REPO=mistralai/Mixtral-8x7B-Instruct-v0.1
 # "
 # python generate.py --compile --checkpoint_path ../checkpoints/$MODEL_REPO/model.pth --batch_size 4
 
-python generate.py --checkpoint_path ../checkpoints/$MODEL_REPO/model.pth --compile
+python generate.py --checkpoint_path ../checkpoints/$MODEL_REPO/model.pth --compile --profile no_q_new_model
 
 
 # python generate.py --checkpoint_path ../checkpoints/$MODEL_REPO/model.pth --batch_size 4 --compile --profile "no_q_profile"
@@ -24,9 +24,3 @@ python generate.py --checkpoint_path ../checkpoints/$MODEL_REPO/model.pth --comp
 # Bandwidth achieved: 8296.64 GB/s
 # Average tokens/sec: 163.61
 # Memory used: 94.12 GB
-
-# no quant
-# Time for inference 2: 0.52 sec total, 385.94 tokens/sec
-# Bandwidth achieved: 36049.12 GB/s
-# Average tokens/sec: 385.58
-# Memory used: 93.57 GB

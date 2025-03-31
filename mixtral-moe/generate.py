@@ -211,7 +211,7 @@ def main(
 
     import torchao
     from torchao.quantization import quantize_, Int8WeightOnlyConfig
-    quantize_(model, Int8WeightOnlyConfig())
+    # quantize_(model, Int8WeightOnlyConfig())
     
     
     from torchao.quantization.quant_primitives import MappingType
