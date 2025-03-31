@@ -108,8 +108,8 @@ class Transformer(nn.Module):
         x = self.tok_embeddings(idx)
         
         for i, layer in enumerate(self.layers):
-            if i>2:
-                break
+            # if i>2:
+                # break
             x = layer(x, input_pos, freqs_cis, mask)
         x = self.norm(x)
         logits = self.output(x)

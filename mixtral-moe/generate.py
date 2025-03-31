@@ -211,7 +211,14 @@ def main(
 
     import torchao
     from torchao.quantization import quantize_, Int8WeightOnlyConfig
-    # quantize_(model, Int8WeightOnlyConfig())
+
+
+    def filter(model, fqn):
+        return isinstance(model, torch.nn.Linear) and "gate" not in fqn
+
+    quantize_(model, Int8WeightOnlyConfig(), filter_fn=filter)
+
+    quantize_(model, Int8WeightOnlyConfig())
     
     
     from torchao.quantization.quant_primitives import MappingType
