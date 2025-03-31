@@ -132,10 +132,7 @@ class TransformerBlock(nn.Module):
     def forward(self, x: Tensor, input_pos: Tensor, freqs_cis: Tensor, mask: Tensor) -> Tensor:
         h = x + self.attention(self.attention_norm(x), freqs_cis, mask, input_pos)
         moe_out = self.block_sparse_moe(self.ffn_norm(h))
-        try:
-            out = h + moe_out
-        except:
-            import fbvscode; fbvscode.set_trace()
+        out = h + moe_out
         return out
 
 
