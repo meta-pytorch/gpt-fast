@@ -93,10 +93,7 @@ def convert_hf_checkpoint(
         if "layers" in key:
             abstract_key = re.sub(r'(\d+)', '{}', key)
             layer_num = re.search(r'\d+', key).group(0)
-            try:
-                new_key = weight_map[abstract_key]
-            except:
-                import fbvscode; fbvscode.set_trace()
+            new_key = weight_map[abstract_key]
             if new_key is None:
                 continue
             new_key = new_key.format(layer_num)
