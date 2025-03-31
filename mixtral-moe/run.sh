@@ -14,7 +14,7 @@ export MODEL_REPO=mistralai/Mixtral-8x7B-Instruct-v0.1
 # "
 # python generate.py --compile --checkpoint_path ../checkpoints/$MODEL_REPO/model.pth --batch_size 4
 
-python generate.py --checkpoint_path ../checkpoints/$MODEL_REPO/model.pth --compile --profile no_q_new_model
+python generate.py --checkpoint_path ../checkpoints/$MODEL_REPO/model.pth --compile
 
 
 # python generate.py --checkpoint_path ../checkpoints/$MODEL_REPO/model.pth --batch_size 4 --compile --profile "no_q_profile"

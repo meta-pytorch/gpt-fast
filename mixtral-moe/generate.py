@@ -217,8 +217,6 @@ def main(
         return isinstance(model, torch.nn.Linear) and "gate" not in fqn
 
     quantize_(model, Int8WeightOnlyConfig(), filter_fn=filter)
-
-    quantize_(model, Int8WeightOnlyConfig())
     
     
     from torchao.quantization.quant_primitives import MappingType
@@ -275,8 +273,7 @@ def main(
 
     if compile:
         torch._inductor.config.assert_indirect_indexing = False
-        torch._dynamo.config.capture_dynamic_output_shape_ops = True
-        torch._dynamo.config.capture_scalar_outputs = True
+        # torch._dynamo.config.capture_dynamic_output_shape_ops = True
 
         global decode_one_token, prefill
         if batch_size > 1: # MoE code has graph break for multi token path so can't fullgraph compile

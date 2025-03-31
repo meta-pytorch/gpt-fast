@@ -106,7 +106,7 @@ class Transformer(nn.Module):
         mask = self.causal_mask[None, None, input_pos]
         freqs_cis = self.freqs_cis[input_pos]
         x = self.tok_embeddings(idx)
-        
+
         for i, layer in enumerate(self.layers):
             # if i>2:
                 # break
