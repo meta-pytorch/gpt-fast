@@ -22,7 +22,7 @@ def device_sync(device):
         print(f"device={device} is not yet suppported")
 
 
-torch._inductor.config.coordinate_descent_tuning = True
+torch._inductor.config.coordinate_descent_tuning = False
 torch._inductor.config.triton.unique_kernel_names = True
 # Experimental features to reduce compilation times, will be on by default in future
 torch._inductor.config.fx_graph_cache = True 
@@ -338,7 +338,7 @@ def main(
             model_forward = torch.compile(model_forward, mode="reduce-overhead", fullgraph=True)
 
         global decode_one_token, prefill
-        decode_one_token = torch.compile(decode_one_token, mode="reduce-overhead", fullgraph=True)
+        decode_one_token = torch.compile(decode_one_token, mode="reduce-overhead", fullgraph=False)
 
         # Uncomment to squeeze more perf out of prefill
         if compile_prefill:

@@ -230,6 +230,7 @@ class FeedForward(nn.Module):
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
+        # self.normalized_shape = (dim,)
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
@@ -239,6 +240,10 @@ class RMSNorm(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
+
+    # @torch.compiler.disable
+    # def forward(self, x: Tensor) -> Tensor:
+    #     return F.rms_norm(x, self.normalized_shape, self.weight, self.eps)
 
 
 def apply_rope_scaling(freqs: torch.Tensor, rope_scaling: Optional[dict] = None):
