@@ -550,7 +550,7 @@ def quantize(
     with torch.device('meta'):
         model = Transformer.from_name(checkpoint_path.parent.name)
 
-    checkpoint = torch.load(str(checkpoint_path), mmap=True, weights_only=True)
+    checkpoint = torch.load(str(checkpoint_path), map_location="cpu", mmap=True, weights_only=True)
     model.load_state_dict(checkpoint, assign=True)
     model = model.to(dtype=precision, device=device)
 

@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 import json
+import os
 import re
 import shutil
 import sys
@@ -31,11 +32,31 @@ def convert_hf_checkpoint(
     config = ModelArgs.from_name(model_name)
     print(f"Model config {config.__dict__}")
 
+    if 'llama-3.2-' in model_name.lower():
+        consolidated_pth = checkpoint_dir / "original" / "consolidated.00.pth"
+        tokenizer_pth = checkpoint_dir / "original" / "tokenizer.model"
+        if consolidated_pth.is_file() and tokenizer_pth.is_file():
+            # Confirm we can load it
+            loaded_result = torch.load(
+                str(consolidated_pth), map_location="cpu", mmap=True, weights_only=True
+            )
+            del loaded_result  # No longer needed
+            print(f"Moving checkpoint to {checkpoint_dir / 'model.pth'}.")
+            os.rename(consolidated_pth, checkpoint_dir / "model.pth")
+            os.rename(tokenizer_pth, checkpoint_dir / "tokenizer.model")
+            os.remove(checkpoint_dir / 'model.safetensors')
+            print("Done.")
+            return
+        else:
+            raise RuntimeError(
+                f"Could not find {consolidated_pth} or {tokenizer_pth}"
+            )
+
     # Load the json file containing weight mapping
     model_map_json_safetensors = checkpoint_dir / 'model.safetensors.index.json'
     model_map_json_pytorch = checkpoint_dir / "pytorch_model.bin.index.json"
     model_map_json = None
-   
+
     try:
       assert model_map_json_safetensors.is_file()
       model_map_json = model_map_json_safetensors
@@ -49,7 +70,7 @@ def convert_hf_checkpoint(
         print(f"Found pytorch index at {model_map_json_pytorch}")
       except AssertionError:
         print(f"{model_map_json_pytorch} not found")
-   
+
     if model_map_json is None: raise Exception("No model map found!")
 
     with open(model_map_json) as json_map:
