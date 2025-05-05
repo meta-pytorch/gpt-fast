@@ -8,11 +8,67 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple, Union
+import json
+import os
+from collections import defaultdict
 
 import torch
 import torch._dynamo.config
 import torch._inductor.config
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask
+
+def summarize_trace(trace_path: str, output_txt_path: str):
+    with open(trace_path, "r") as f:
+        trace = json.load(f)
+
+    events = trace.get("traceEvents", [])
+    op_stats = defaultdict(lambda: {"cpu_mem": 0, "gpu_mem": 0, "time_us": 0.0, "calls": 0})
+
+    for e in events:
+        if e.get("ph") != "X":
+            continue
+        name = e.get("name", "unknown")
+        dur = float(e.get("dur", 0))
+        args = e.get("args", {})
+        cpu_mem = args.get("cpu_memory_usage", 0)
+        gpu_mem = args.get("cuda_memory_usage", 0)
+
+        op_stats[name]["cpu_mem"] += cpu_mem
+        op_stats[name]["gpu_mem"] += gpu_mem
+        op_stats[name]["time_us"] += dur
+        op_stats[name]["calls"] += 1
+
+    lines = []
+    lines.append("=== Torch Profiler Summary ===\n")
+
+    device_info = trace.get("deviceProperties", [])
+    if device_info:
+        for d in device_info:
+            lines.append(f"Device Info:\n- {d['name']} | {round(d['totalGlobalMem']/1e9, 2)} GB total memory\n")
+
+    lines.append("\n--- Top Ops by GPU Memory Usage (bytes) ---")
+    top_mem = sorted(op_stats.items(), key=lambda kv: kv[1]["gpu_mem"], reverse=True)[:20]
+    for name, stats in top_mem:
+        lines.append(f"{name:<30} | GPU Mem: {stats['gpu_mem']} | CPU Mem: {stats['cpu_mem']} | Time: {stats['time_us']:.2f} µs | Calls: {stats['calls']}")
+
+    lines.append("\n--- Top Ops by Duration (µs) ---")
+    top_dur = sorted(op_stats.items(), key=lambda kv: kv[1]["time_us"], reverse=True)[:20]
+    for name, stats in top_dur:
+        lines.append(f"{name:<30} | Time: {stats['time_us']:.2f} µs | GPU Mem: {stats['gpu_mem']} | Calls: {stats['calls']}")
+
+    lines.append("\n--- Summary ---")
+    lines.append(f"Unique Ops: {len(op_stats)}")
+    lines.append(f"Total Events: {len(events)}")
+    if "trace_id" in trace:
+        lines.append(f"Profiler Trace ID: {trace['trace_id']}")
+    if "cuda_runtime_version" in trace:
+        lines.append(f"CUDA Runtime Version: {trace['cuda_runtime_version']}")
+    if "cupti_version" in trace:
+        lines.append(f"CUPTI Version: {trace['cupti_version']}")
+
+    os.makedirs(os.path.dirname(output_txt_path), exist_ok=True)
+    with open(output_txt_path, "w") as f:
+        f.write("\n".join(lines))
 
 def device_sync(device):
     if "cuda" in device:
@@ -396,7 +452,15 @@ def main(
             prof = contextlib.nullcontext()
         else:
             torch.profiler._utils._init_for_cuda_graphs()
-            prof = torch.profiler.profile()
+            prof = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                record_shapes=True,
+                with_flops = True,
+                profile_memory=True,
+            )
         with prof:
             y, metrics = generate(
                 model,
@@ -414,11 +478,28 @@ def main(
         if i == -1:
             print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
             continue
-        if hasattr(prof, "export_chrome_trace"):
-            if use_tp:
-                prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
-            else:
-                prof.export_chrome_trace(f"{profile}.json")
+        if hasattr(prof, "export_chrome_trace") and profile:
+            json_path = f"{profile}_rank_{rank}.json" if use_tp else f"{profile}.json"
+            prof.export_chrome_trace(json_path)
+            print(f"[Profiler] Chrome trace saved to {json_path}")
+
+            # New: Write memory and timing summary
+            from pathlib import Path
+            output_dir = Path("outputs")
+            output_dir.mkdir(exist_ok=True)
+            txt_path = output_dir / (Path(profile).stem + "_summary.txt")
+
+            with open(txt_path, "w") as f:
+                f.write("=== PyTorch Profiler Summary ===\n\n")
+                f.write(f"Trace ID: {json_path}\n")
+                f.write(f"{'Name':40} | CPU Mem (MB) | GPU Mem (MB) | Time (us) | #Calls\n")
+                f.write("-" * 80 + "\n")
+                for item in prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=50).splitlines():
+                    f.write(item + "\n")
+                f.write("\n--- End of Summary ---\n")
+
+            print(f"[Profiler] Detailed summary saved to {txt_path}")
+
         device_sync(device=device) # MKG
         t = time.perf_counter() - t0
 
