@@ -15,5 +15,5 @@ setup(
     description='A simple, fast, pure PyTorch Llama inference engine',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
-    url='https://github.com/pytorch-labs/gpt-fast',
+    url='https://github.com/meta-pytorch/gpt-fast',
 )
