@@ -33,9 +33,9 @@ For more details about Mixtral 8x7B, please check [this page](./mixtral-moe) or 
 
 ## Examples
 In the spirit of keeping the repo minimal, here are various examples of extensions you can make to gpt-fast as PRs.
-- [Google Gemma](https://github.com/pytorch-labs/gpt-fast/pull/115)
-- [xAI Grok-1](https://github.com/pytorch-labs/gpt-fast/pull/171)
-- [Databricks DBRX](https://github.com/pytorch-labs/gpt-fast/pull/174)
+- [Google Gemma](https://github.com/meta-pytorch/gpt-fast/pull/115)
+- [xAI Grok-1](https://github.com/meta-pytorch/gpt-fast/pull/171)
+- [Databricks DBRX](https://github.com/meta-pytorch/gpt-fast/pull/174)
 
 ## Community
 
@@ -221,7 +221,7 @@ You can then eval or generate text with this model in the same way as above.
 
 ## License
 
-`gpt-fast` is released under the [BSD 3](https://github.com/pytorch-labs/gpt-fast/main/LICENSE) license.
+`gpt-fast` is released under the [BSD 3](https://github.com/meta-pytorch/gpt-fast/main/LICENSE) license.
 
 ## Acknowledgements
 Thanks to:
