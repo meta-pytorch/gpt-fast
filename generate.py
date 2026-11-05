@@ -216,8 +216,9 @@ def generate(
             input_pos = input_pos + num_added
             next_token = next_tokens[-1]
     else:
-        generated_tokens, _ = decode_n_tokens(model, next_token.view(batch_size, -1), input_pos, max_new_tokens - 1, callback=callback, **sampling_kwargs)
-        seq[:, T + 1:] = torch.cat(generated_tokens, dim=-1)
+        if max_new_tokens > 1:
+            generated_tokens, _ = decode_n_tokens(model, next_token.view(batch_size, -1), input_pos, max_new_tokens - 1, callback=callback, **sampling_kwargs)
+            seq[:, T + 1:] = torch.cat(generated_tokens, dim=-1)
 
     generate_stats = {
         'accept_counts': accept_counts
