@@ -8,11 +8,67 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple, Union
+import json
+import os
+from collections import defaultdict
 
 import torch
 import torch._dynamo.config
 import torch._inductor.config
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask
+
+def summarize_trace(trace_path: str, output_txt_path: str):
+    with open(trace_path, "r") as f:
+        trace = json.load(f)
+
+    events = trace.get("traceEvents", [])
+    op_stats = defaultdict(lambda: {"cpu_mem": 0, "gpu_mem": 0, "time_us": 0.0, "calls": 0})
+
+    for e in events:
+        if e.get("ph") != "X":
+            continue
+        name = e.get("name", "unknown")
+        dur = float(e.get("dur", 0))
+        args = e.get("args", {})
+        cpu_mem = args.get("cpu_memory_usage", 0)
+        gpu_mem = args.get("cuda_memory_usage", 0)
+
+        op_stats[name]["cpu_mem"] += cpu_mem
+        op_stats[name]["gpu_mem"] += gpu_mem
+        op_stats[name]["time_us"] += dur
+        op_stats[name]["calls"] += 1
+
+    lines = []
+    lines.append("=== Torch Profiler Summary ===\n")
+
+    device_info = trace.get("deviceProperties", [])
+    if device_info:
+        for d in device_info:
+            lines.append(f"Device Info:\n- {d['name']} | {round(d['totalGlobalMem']/1e9, 2)} GB total memory\n")
+
+    lines.append("\n--- Top Ops by GPU Memory Usage (bytes) ---")
+    top_mem = sorted(op_stats.items(), key=lambda kv: kv[1]["gpu_mem"], reverse=True)[:20]
+    for name, stats in top_mem:
+        lines.append(f"{name:<30} | GPU Mem: {stats['gpu_mem']} | CPU Mem: {stats['cpu_mem']} | Time: {stats['time_us']:.2f} µs | Calls: {stats['calls']}")
+
+    lines.append("\n--- Top Ops by Duration (µs) ---")
+    top_dur = sorted(op_stats.items(), key=lambda kv: kv[1]["time_us"], reverse=True)[:20]
+    for name, stats in top_dur:
+        lines.append(f"{name:<30} | Time: {stats['time_us']:.2f} µs | GPU Mem: {stats['gpu_mem']} | Calls: {stats['calls']}")
+
+    lines.append("\n--- Summary ---")
+    lines.append(f"Unique Ops: {len(op_stats)}")
+    lines.append(f"Total Events: {len(events)}")
+    if "trace_id" in trace:
+        lines.append(f"Profiler Trace ID: {trace['trace_id']}")
+    if "cuda_runtime_version" in trace:
+        lines.append(f"CUDA Runtime Version: {trace['cuda_runtime_version']}")
+    if "cupti_version" in trace:
+        lines.append(f"CUPTI Version: {trace['cupti_version']}")
+
+    os.makedirs(os.path.dirname(output_txt_path), exist_ok=True)
+    with open(output_txt_path, "w") as f:
+        f.write("\n".join(lines))
 
 def device_sync(device):
     if "cuda" in device:
@@ -66,19 +122,39 @@ def causal_mask(b, h, q, kv):
     return q >= kv
 
 def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
-    # input_pos: [B, S]
-    mask = create_block_mask(causal_mask, 1, 1, input_pos.shape[0], model.max_seq_length, device=x.device)
-    logits = model(mask, x, input_pos)
+    print("[DEBUG] Inside prefill()")
+    print(f"[DEBUG] x.shape: {x.shape}, input_pos.shape: {input_pos.shape}")
+    kv_cache = model.layers[0].attention.kv_cache
+    kv_len = kv_cache.k_cache.shape[2] if kv_cache.compress else model.max_seq_length
+
+    mask = create_block_mask(
+        causal_mask, 1, 1,
+        Q_LEN := x.size(1),
+        kv_len,
+        device=x.device
+    )
+
+    logits = model(mask, x, input_pos, prefill_mode=True)
     return sample(logits, **sampling_kwargs)[0]
 
 def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, block_mask: BlockMask, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
-    # input_pos: [B, 1]
-    assert input_pos.shape[-1] == 1
+    assert input_pos.shape[-1] == 1, "input_pos must be shape [B, 1]"
+
+    # Step 1: Select the block slice
     block_index = input_pos // block_mask.BLOCK_SIZE[0]
-    mask = block_mask[:, :, block_index]
-    mask.mask_mod = block_mask.mask_mod
-    mask.seq_lengths = (1, model.max_seq_length)
-    logits = model(mask, x, input_pos)
+    mask = block_mask[:, :, block_index]  # [1, H, 1, block_size]
+    mask.mask_mod = block_mask.mask_mod  # pass-through (may be updated inside model)
+
+    # Step 2: Adjust kv_len to current compressed length
+    kv_cache = model.layers[0].attention.kv_cache
+    if kv_cache.compress:
+        mask.seq_lengths = (1, kv_cache.k_cache.shape[2])
+    else:
+        # full-length
+        mask.seq_lengths = (1, model.max_seq_length)
+
+    logits = model(mask, x, input_pos, prefill_mode=False)
+
     return sample(logits, **sampling_kwargs)
 
 def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torch.Tensor, num_new_tokens: int, callback=lambda _: _, **sampling_kwargs):
@@ -166,7 +242,9 @@ def generate(
     """
     Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
     """
-
+    print("[DEBUG] Entered generate()")
+    print(f"[DEBUG] prompt shape: {prompt.shape}")
+    print(f"[DEBUG] batch_size = {batch_size}, max_new_tokens = {max_new_tokens}")
     is_speculative = draft_model is not None
     # create an empty tensor of the expected final shape and fill in the current tokens
     T = prompt.size(-1)
@@ -192,6 +270,7 @@ def generate(
     input_pos = torch.arange(0, T, device=device)
 
     next_token = prefill(model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
+    print("[DEBUG] Prefill completed, next token sampled.")
     if is_speculative:
         prefill(draft_model, prompt.view(batch_size, -1), input_pos, **sampling_kwargs)
     seq[:, T] = next_token.squeeze()
@@ -216,6 +295,7 @@ def generate(
             input_pos = input_pos + num_added
             next_token = next_tokens[-1]
     else:
+        print("[DEBUG] Starting decode_n_tokens() loop")
         generated_tokens, _ = decode_n_tokens(model, next_token.view(batch_size, -1), input_pos, max_new_tokens - 1, callback=callback, **sampling_kwargs)
         seq[:, T + 1:] = torch.cat(generated_tokens, dim=-1)
 
@@ -298,6 +378,11 @@ def main(
     draft_checkpoint_path: Optional[Path] = None,
     speculate_k: int = 5,
     device=default_device,
+    compress_kv: bool = False,
+    quantize_kv: bool = False,
+    quantize_type: str = "int8",
+    window_size: int = None,
+    sink_size: int = 0,
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer.
     """
@@ -323,6 +408,21 @@ def main(
     print("Loading model ...")
     t0 = time.time()
     model = _load_model(checkpoint_path, device, precision, use_tp)
+    print(f"[DEBUG] Model total parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+
+    # Enable KV Compression
+    if compress_kv:
+        for layer in model.layers:
+            layer.attention.kv_compressor.enabled = True
+            layer.attention.kv_compressor.window_size = window_size
+            layer.attention.kv_compressor.sink_size = sink_size
+    
+    if quantize_kv:
+        for layer in model.layers:
+            layer.attention.kv_quantizer.enabled = True
+            layer.attention.kv_quantizer.quantize_type = quantize_type
+            layer.attention.kv_quantizer.window_size = window_size
+            layer.attention.kv_quantizer.sink_size = sink_size
 
     if is_speculative:
         draft_model = _load_model(draft_checkpoint_path, device, precision, use_tp)
@@ -333,7 +433,7 @@ def main(
     print(f"Time to load model: {time.time() - t0:.02f} seconds")
 
     tokenizer = get_tokenizer(tokenizer_path, checkpoint_path)
-
+    
     if isinstance(prompt, str):
         encoded = encode_tokens(tokenizer, prompt, bos=True, device=device)
     else:
@@ -389,14 +489,23 @@ def main(
                     buffer.clear()
                 # print(, end='', flush=True)
         else:
-            callback = lambda x : x
+            callback = lambda x: x
+
         t0 = time.perf_counter()
         import contextlib
         if (i != num_samples - 1 or not profile) or (use_tp and rank != 0):
             prof = contextlib.nullcontext()
         else:
             torch.profiler._utils._init_for_cuda_graphs()
-            prof = torch.profiler.profile()
+            prof = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                record_shapes=True,
+                with_flops = True,
+                profile_memory=True,
+            )
         with prof:
             y, metrics = generate(
                 model,
@@ -414,11 +523,28 @@ def main(
         if i == -1:
             print(f"Compilation time: {time.perf_counter() - t0:.2f} seconds")
             continue
-        if hasattr(prof, "export_chrome_trace"):
-            if use_tp:
-                prof.export_chrome_trace(f"{profile}_rank_{rank}.json")
-            else:
-                prof.export_chrome_trace(f"{profile}.json")
+        if hasattr(prof, "export_chrome_trace") and profile:
+            json_path = f"{profile}_rank_{rank}.json" if use_tp else f"{profile}.json"
+            prof.export_chrome_trace(json_path)
+            print(f"[Profiler] Chrome trace saved to {json_path}")
+
+            # New: Write memory and timing summary
+            from pathlib import Path
+            output_dir = Path("outputs")
+            output_dir.mkdir(exist_ok=True)
+            txt_path = output_dir / (Path(profile).stem + "_summary.txt")
+
+            with open(txt_path, "w") as f:
+                f.write("=== PyTorch Profiler Summary ===\n\n")
+                f.write(f"Trace ID: {json_path}\n")
+                f.write(f"{'Name':40} | CPU Mem (MB) | GPU Mem (MB) | Time (us) | #Calls\n")
+                f.write("-" * 80 + "\n")
+                for item in prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=50).splitlines():
+                    f.write(item + "\n")
+                f.write("\n--- End of Summary ---\n")
+
+            print(f"[Profiler] Detailed summary saved to {txt_path}")
+
         device_sync(device=device) # MKG
         t = time.perf_counter() - t0
 
@@ -475,10 +601,17 @@ if __name__ == '__main__':
     parser.add_argument('--speculate_k', type=int, default=5, help='Speculative execution depth.')
     parser.add_argument('--draft_checkpoint_path', type=Path, default=None, help='Draft checkpoint path.')
     parser.add_argument('--device', type=str, default=default_device, help='Device to use')
+    parser.add_argument('--compress_kv', action='store_true', help='Enable attention kv compression')
+    parser.add_argument('--quantize_kv', action='store_true', help='Enable partial quantization of KV cache')
+    parser.add_argument('--quantize_type', type=str, default='int8', help='Quantization type (e.g., int8, int4)')    
+    parser.add_argument('--window_size', type=int, default=32, help='Window size for attention sliding window')
+    parser.add_argument('--sink_size', type=int, default=16, help='Attention sink size')
 
     args = parser.parse_args()
+    #new change
+    assert not (args.compress_kv and args.quantize_kv), "Cannot compress_kv and quantize_kv together"
     main(
         args.prompt, args.interactive, args.num_samples, args.max_new_tokens, args.batch_size, args.top_k,
         args.temperature, args.checkpoint_path, args.compile, args.compile_prefill, args.profile, args.draft_checkpoint_path,
-        args.speculate_k, args.device
+        args.speculate_k, args.device, args.compress_kv, args.quantize_kv, args.quantize_type, args.window_size, args.sink_size
     )
