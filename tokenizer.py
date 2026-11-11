@@ -3,7 +3,9 @@ import sentencepiece as spm
 import tiktoken
 from tiktoken.load import load_tiktoken_bpe
 from pathlib import Path
+import torch
 from typing import Dict
+from transformers import AutoTokenizer
 
 class TokenizerInterface:
     def __init__(self, model_path):
@@ -94,6 +96,33 @@ class TiktokenWrapper(TokenizerInterface):
     def eos_id(self):
         return self._eos_id
 
+class QwenTokenizerWrapper(TokenizerInterface):
+    def __init__(self, model_path):
+        super().__init__(model_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "Qwen/Qwen2-0.5B-Instruct",
+            trust_remote_code=True,
+            use_fast=True
+        )
+
+    def encode(self, text):
+        messages = [{"role": "user", "content": text}]
+        prompt = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        return self.tokenizer.encode(prompt, add_special_tokens=False)
+
+    def decode(self, tokens):
+        if isinstance(tokens, torch.Tensor):
+            tokens = tokens.tolist()
+        if isinstance(tokens[0], list):
+            tokens = tokens[0]
+        return self.tokenizer.decode(tokens)
+
+    def bos_id(self):
+        return self.tokenizer.convert_tokens_to_ids("<|im_start|>")
+
+    def eos_id(self):
+        return self.tokenizer.convert_tokens_to_ids("<|im_end|>")
+
 def get_tokenizer(tokenizer_model_path, model_name):
     """
     Factory function to get the appropriate tokenizer based on the model name.
@@ -105,8 +134,9 @@ def get_tokenizer(tokenizer_model_path, model_name):
     Returns:
     - TokenizerInterface: An instance of a tokenizer.
     """
-
-    if "llama-3" in str(model_name).lower():
+    if "qwen" in str(model_name).lower():
+        return QwenTokenizerWrapper(tokenizer_model_path)
+    elif "llama-3" in str(model_name).lower():
         return TiktokenWrapper(tokenizer_model_path)
     else:
         return SentencePieceWrapper(tokenizer_model_path)
